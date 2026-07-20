@@ -25,6 +25,10 @@ private slots:
     void displaysStableEmptyStateWithoutImage();
     void separateInvocationsRemainIndependent();
     void browsesNaturallySortedVisibleSupportedImages();
+    void opensSelectedImageWithCtrlO();
+    void singleImageDropBrowsesContainingDirectory();
+    void multipleImageDropBrowsesOnlySupportedDroppedFilesInNaturalOrder();
+    void cancelledPickerAndUnsupportedDropRemainStable();
 
 private:
     struct RunningFlick
@@ -42,9 +46,11 @@ private:
         }
     };
 
-    void start(RunningFlick &flick, const QStringList &arguments = {});
+    void start(RunningFlick &flick, const QStringList &arguments = {},
+               const QString &pickerSelection = {});
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
+    QImage sendCommandAndWaitForScreenshot(RunningFlick &flick, const QByteArray &command);
     QImage captureAfter(RunningFlick &flick, int delayMilliseconds);
     QString writeFixture(const QString &encodedName, const QString &imageName);
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
@@ -78,7 +84,8 @@ QString FlickApplicationTest::writeFixture(const QString &encodedName, const QSt
     return path;
 }
 
-void FlickApplicationTest::start(RunningFlick &flick, const QStringList &arguments)
+void FlickApplicationTest::start(RunningFlick &flick, const QStringList &arguments,
+                                 const QString &pickerSelection)
 {
     QVERIFY(flick.environment.isValid());
     const QString config = flick.environment.filePath(QStringLiteral("config"));
@@ -103,6 +110,7 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     environment.insert(QStringLiteral("XDG_STATE_HOME"), state);
     environment.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
     environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), flick.screenshotPath);
+    environment.insert(QStringLiteral("FLICK_TEST_FILE_PICKER_SELECTION"), pickerSelection);
     flick.process.setProcessEnvironment(environment);
     flick.process.start(executable_, arguments);
     QVERIFY2(flick.process.waitForStarted(), qPrintable(flick.process.errorString()));
@@ -126,13 +134,20 @@ QImage FlickApplicationTest::waitForScreenshot(const RunningFlick &flick)
 
 QImage FlickApplicationTest::pressKeyAndWaitForScreenshot(RunningFlick &flick, const Qt::Key key)
 {
+    return sendCommandAndWaitForScreenshot(
+        flick, key == Qt::Key_Left ? QByteArrayLiteral("Left") : QByteArrayLiteral("Right"));
+}
+
+QImage FlickApplicationTest::sendCommandAndWaitForScreenshot(RunningFlick &flick,
+                                                              const QByteArray &command)
+{
     if (!QFile::remove(flick.screenshotPath)) {
         QTest::qFail("Could not remove the previous screenshot", __FILE__, __LINE__);
         return {};
     }
-    const QByteArray command =
-        key == Qt::Key_Left ? QByteArrayLiteral("Left\n") : QByteArrayLiteral("Right\n");
-    if (flick.process.write(command) != command.size() || !flick.process.waitForBytesWritten()) {
+    const QByteArray terminatedCommand = command + '\n';
+    if (flick.process.write(terminatedCommand) != terminatedCommand.size() ||
+        !flick.process.waitForBytesWritten()) {
         QTest::qFail("Could not send a key to Flick", __FILE__, __LINE__);
         return {};
     }
@@ -270,6 +285,88 @@ void FlickApplicationTest::browsesNaturallySortedVisibleSupportedImages()
     QVERIFY(containsColor(endBoundary, tenthColor));
     QVERIFY(endBoundary != next);
     QCOMPARE(captureAfter(flick, 1600), next);
+}
+
+void FlickApplicationTest::opensSelectedImageWithCtrlO()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor selectedColor(138, 43, 226);
+    const QString selected =
+        writeImage(directory, QStringLiteral("selected.png"), selectedColor);
+    QVERIFY(!selected.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {}, selected);
+    waitForScreenshot(flick);
+    const QImage opened = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlO"));
+    QVERIFY(containsColor(opened, selectedColor));
+}
+
+void FlickApplicationTest::singleImageDropBrowsesContainingDirectory()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(255, 140, 0);
+    const QColor secondColor(0, 206, 209);
+    const QString first = writeImage(directory, QStringLiteral("photo1.png"), firstColor);
+    const QString second = writeImage(directory, QStringLiteral("photo2.png"), secondColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick);
+    waitForScreenshot(flick);
+    const QImage dropped =
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Drop:") + first.toUtf8());
+    QVERIFY(containsColor(dropped, firstColor));
+    QVERIFY(containsColor(pressKeyAndWaitForScreenshot(flick, Qt::Key_Right), secondColor));
+}
+
+void FlickApplicationTest::multipleImageDropBrowsesOnlySupportedDroppedFilesInNaturalOrder()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor secondColor(46, 139, 87);
+    const QColor tenthColor(199, 21, 133);
+    const QString omitted = writeImage(directory, QStringLiteral("image1.png"), QColor(Qt::red));
+    const QString second = writeImage(directory, QStringLiteral("IMAGE2.PNG"), secondColor);
+    const QString tenth = writeImage(directory, QStringLiteral("image10.png"), tenthColor);
+    QVERIFY(!omitted.isEmpty());
+    QVERIFY(!second.isEmpty());
+    QVERIFY(!tenth.isEmpty());
+    const QString unsupported = directory.filePath(QStringLiteral("notes.txt"));
+    QFile textFile(unsupported);
+    QVERIFY(textFile.open(QIODevice::WriteOnly));
+    textFile.write("notes");
+    textFile.close();
+
+    RunningFlick flick;
+    start(flick);
+    waitForScreenshot(flick);
+    const QByteArray drop = QByteArrayLiteral("Drop:") + tenth.toUtf8() + '|' +
+                            unsupported.toUtf8() + '|' + second.toUtf8();
+    const QImage initial = sendCommandAndWaitForScreenshot(flick, drop);
+    QVERIFY(containsColor(initial, secondColor));
+    const QImage next = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(next, tenthColor));
+    const QImage boundary = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(boundary, tenthColor));
+    QVERIFY(boundary != next);
+}
+
+void FlickApplicationTest::cancelledPickerAndUnsupportedDropRemainStable()
+{
+    RunningFlick flick;
+    start(flick);
+    const QImage empty = waitForScreenshot(flick);
+    QCOMPARE(sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlO")), empty);
+
+    const QImage feedback =
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Drop:/tmp/not-an-image.txt"));
+    QVERIFY(feedback != empty);
+    QCOMPARE(captureAfter(flick, 1600), empty);
+    QVERIFY(flick.process.state() == QProcess::Running);
 }
 
 QTEST_MAIN(FlickApplicationTest)

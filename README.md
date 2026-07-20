@@ -20,6 +20,11 @@ state:
 ./build/flick
 ```
 
+While Flick is running, press `Ctrl+O` to choose an image with the system file
+picker. Dropping one image opens its containing directory for navigation;
+dropping several files creates a sequence from only the supported images in the
+drop.
+
 To build and run the application-level tests, include Qt Test and enable CTest:
 
 ```sh
