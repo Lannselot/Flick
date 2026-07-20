@@ -24,9 +24,11 @@ private slots:
     void displaysJpegInTopLevelWindow();
     void displaysStableEmptyStateWithoutImage();
     void separateInvocationsRemainIndependent();
+    void browsesNaturallySortedVisibleSupportedImages();
 
 private:
-    struct RunningFlick {
+    struct RunningFlick
+    {
         QProcess process;
         QTemporaryDir environment;
         QString screenshotPath;
@@ -42,7 +44,11 @@ private:
 
     void start(RunningFlick &flick, const QStringList &arguments = {});
     QImage waitForScreenshot(const RunningFlick &flick);
+    QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
+    QImage captureAfter(RunningFlick &flick, int delayMilliseconds);
     QString writeFixture(const QString &encodedName, const QString &imageName);
+    static QString writeImage(const QTemporaryDir &directory, const QString &name,
+                              const QColor &color);
     static bool containsColor(const QImage &image, const QColor &color, int tolerance = 0);
 
     QString executable_;
@@ -85,8 +91,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     QVERIFY(QDir().mkpath(cache));
     QVERIFY(QDir().mkpath(state));
     QVERIFY(QDir().mkpath(runtime));
-    QVERIFY(QFile::setPermissions(runtime, QFileDevice::ReadOwner | QFileDevice::WriteOwner
-                                               | QFileDevice::ExeOwner));
+    QVERIFY(QFile::setPermissions(runtime, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                               QFileDevice::ExeOwner));
 
     flick.screenshotPath = flick.environment.filePath(QStringLiteral("window.png"));
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -118,14 +124,54 @@ QImage FlickApplicationTest::waitForScreenshot(const RunningFlick &flick)
     return screenshot;
 }
 
-bool FlickApplicationTest::containsColor(const QImage &image, const QColor &color, const int tolerance)
+QImage FlickApplicationTest::pressKeyAndWaitForScreenshot(RunningFlick &flick, const Qt::Key key)
+{
+    if (!QFile::remove(flick.screenshotPath)) {
+        QTest::qFail("Could not remove the previous screenshot", __FILE__, __LINE__);
+        return {};
+    }
+    const QByteArray command =
+        key == Qt::Key_Left ? QByteArrayLiteral("Left\n") : QByteArrayLiteral("Right\n");
+    if (flick.process.write(command) != command.size() || !flick.process.waitForBytesWritten()) {
+        QTest::qFail("Could not send a key to Flick", __FILE__, __LINE__);
+        return {};
+    }
+    return waitForScreenshot(flick);
+}
+
+QImage FlickApplicationTest::captureAfter(RunningFlick &flick, const int delayMilliseconds)
+{
+    QTest::qWait(delayMilliseconds);
+    if (!QFile::remove(flick.screenshotPath)) {
+        QTest::qFail("Could not remove the previous screenshot", __FILE__, __LINE__);
+        return {};
+    }
+    const QByteArray command = QByteArrayLiteral("Capture\n");
+    if (flick.process.write(command) != command.size() || !flick.process.waitForBytesWritten()) {
+        QTest::qFail("Could not request a Flick screenshot", __FILE__, __LINE__);
+        return {};
+    }
+    return waitForScreenshot(flick);
+}
+
+QString FlickApplicationTest::writeImage(const QTemporaryDir &directory, const QString &name,
+                                         const QColor &color)
+{
+    QImage image(QSize(32, 24), QImage::Format_RGB32);
+    image.fill(color);
+    const QString path = directory.filePath(name);
+    return image.save(path, "PNG") ? path : QString{};
+}
+
+bool FlickApplicationTest::containsColor(const QImage &image, const QColor &color,
+                                         const int tolerance)
 {
     for (int y = 0; y < image.height(); ++y) {
         for (int x = 0; x < image.width(); ++x) {
             const QColor pixel = image.pixelColor(x, y);
-            if (qAbs(pixel.red() - color.red()) <= tolerance
-                && qAbs(pixel.green() - color.green()) <= tolerance
-                && qAbs(pixel.blue() - color.blue()) <= tolerance) {
+            if (qAbs(pixel.red() - color.red()) <= tolerance &&
+                qAbs(pixel.green() - color.green()) <= tolerance &&
+                qAbs(pixel.blue() - color.blue()) <= tolerance) {
                 return true;
             }
         }
@@ -135,7 +181,8 @@ bool FlickApplicationTest::containsColor(const QImage &image, const QColor &colo
 
 void FlickApplicationTest::displaysPngInTopLevelWindow()
 {
-    const QString path = writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("known.png"));
+    const QString path =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("known.png"));
     QVERIFY(!path.isEmpty());
 
     RunningFlick flick;
@@ -147,7 +194,8 @@ void FlickApplicationTest::displaysPngInTopLevelWindow()
 
 void FlickApplicationTest::displaysJpegInTopLevelWindow()
 {
-    const QString path = writeFixture(QStringLiteral("known.jpg.base64"), QStringLiteral("known.jpg"));
+    const QString path =
+        writeFixture(QStringLiteral("known.jpg.base64"), QStringLiteral("known.jpg"));
     QVERIFY(!path.isEmpty());
 
     RunningFlick flick;
@@ -181,6 +229,47 @@ void FlickApplicationTest::separateInvocationsRemainIndependent()
     QVERIFY(second.process.state() == QProcess::Running);
     QVERIFY(first.process.processId() != second.process.processId());
     QCOMPARE(firstWindow, secondWindow);
+}
+
+void FlickApplicationTest::browsesNaturallySortedVisibleSupportedImages()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(220, 20, 60);
+    const QColor secondColor(50, 205, 50);
+    const QColor tenthColor(65, 105, 225);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString second = writeImage(directory, QStringLiteral("IMAGE2.PNG"), secondColor);
+    const QString tenth = writeImage(directory, QStringLiteral("image10.jpg"), tenthColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+    QVERIFY(!tenth.isEmpty());
+    QVERIFY(!writeImage(directory, QStringLiteral(".image0.png"), QColor(Qt::black)).isEmpty());
+    QFile unrelated(directory.filePath(QStringLiteral("image3.txt")));
+    QVERIFY(unrelated.open(QIODevice::WriteOnly));
+    QCOMPARE(unrelated.write("not an image"), 12);
+    unrelated.close();
+
+    RunningFlick flick;
+    start(flick, {second});
+    const QImage initial = waitForScreenshot(flick);
+    QVERIFY(containsColor(initial, secondColor));
+
+    const QImage previous = pressKeyAndWaitForScreenshot(flick, Qt::Key_Left);
+    QVERIFY(containsColor(previous, firstColor));
+    const QImage startBoundary = pressKeyAndWaitForScreenshot(flick, Qt::Key_Left);
+    QVERIFY(containsColor(startBoundary, firstColor));
+    QVERIFY(startBoundary != previous);
+    QCOMPARE(captureAfter(flick, 1600), previous);
+
+    const QImage middle = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(middle, secondColor));
+    const QImage next = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(next, tenthColor));
+    const QImage endBoundary = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(endBoundary, tenthColor));
+    QVERIFY(endBoundary != next);
+    QCOMPARE(captureAfter(flick, 1600), next);
 }
 
 QTEST_MAIN(FlickApplicationTest)
