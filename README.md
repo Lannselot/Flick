@@ -46,6 +46,12 @@ behavior. Press `Space` to pause on the current frame and press it again to
 resume. Photographs with EXIF orientation metadata are presented upright
 automatically.
 
+Large images initially fit inside the window, while smaller images open at
+100%. Press `1` for 100% or `F` to fit the image. Use the mouse wheel to zoom
+around the pointer, drag with the left mouse button to pan, or pan with
+`Shift` plus an arrow key. Plain left and right arrows continue to browse the
+image sequence at any zoom level.
+
 ## License
 
 Copyright (C) 2026 Flick contributors

@@ -6,9 +6,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] Images larger than the viewport initially fit inside it, while smaller images initially display at 100%.
-- [ ] The `1` key selects 100% and `F` fits the image to the viewport.
-- [ ] Pointer-driven zoom preserves the image point beneath the cursor.
-- [ ] A zoomed image pans by left-button drag and by Shift plus arrow keys.
-- [ ] Plain arrow keys navigate images even while zoomed.
-- [ ] Changing the current image reapplies the initial fit-or-100% policy.
+- [x] Images larger than the viewport initially fit inside it, while smaller images initially display at 100%.
+- [x] The `1` key selects 100% and `F` fits the image to the viewport.
+- [x] Pointer-driven zoom preserves the image point beneath the cursor.
+- [x] A zoomed image pans by left-button drag and by Shift plus arrow keys.
+- [x] Plain arrow keys navigate images even while zoomed.
+- [x] Changing the current image reapplies the initial fit-or-100% policy.

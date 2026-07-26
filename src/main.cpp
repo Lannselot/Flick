@@ -15,17 +15,21 @@
 #include <QLabel>
 #include <QLocale>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSet>
 #include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QWheelEvent>
 #include <QtEndian>
 #include <QtConcurrentRun>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <limits>
@@ -230,7 +234,10 @@ public:
         viewport_->setAlignment(Qt::AlignCenter);
         viewport_->setBackgroundRole(QPalette::Dark);
         viewport_->setFocusPolicy(Qt::NoFocus);
+        viewport_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        viewport_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         viewport_->setWidget(imageLabel_);
+        viewport_->viewport()->installEventFilter(this);
         setFocusPolicy(Qt::StrongFocus);
 
         boundaryMessage_ = new QLabel;
@@ -275,14 +282,94 @@ public:
     {
         return decodeCounts_.value(QFileInfo(path).canonicalFilePath());
     }
+
+    QByteArray viewState() const
+    {
+        return QByteArray::number(zoom_, 'f', 6) + ',' +
+               QByteArray::number(viewport_->horizontalScrollBar()->value()) + ',' +
+               QByteArray::number(viewport_->verticalScrollBar()->value()) + ',' +
+               QByteArray::number(viewport_->viewport()->width()) + ',' +
+               QByteArray::number(viewport_->viewport()->height()) + ',' +
+               QByteArray::number(imageOrigin().x()) + ',' +
+               QByteArray::number(imageOrigin().y());
+    }
 #endif
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == viewport_->viewport() && event->type() == QEvent::Wheel) {
+            const auto *wheel = static_cast<QWheelEvent *>(event);
+            const int zoomDelta = wheel->angleDelta().y() != 0
+                                      ? wheel->angleDelta().y()
+                                      : wheel->pixelDelta().y() * 8;
+            zoomAt(wheel->position(), zoomDelta);
+            return true;
+        }
+        if (watched == viewport_->viewport() && event->type() == QEvent::MouseButtonPress) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                dragging_ = true;
+                lastDragPosition_ = mouse->position();
+                viewport_->viewport()->grabMouse();
+                return true;
+            }
+        }
+        if (watched == viewport_->viewport() && event->type() == QEvent::MouseMove && dragging_) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (!mouse->buttons().testFlag(Qt::LeftButton)) {
+                dragging_ = false;
+                viewport_->viewport()->releaseMouse();
+                return true;
+            }
+            const QPointF movement = mouse->position() - lastDragPosition_;
+            panBy(-qRound(movement.x()), -qRound(movement.y()));
+            lastDragPosition_ = mouse->position();
+            return true;
+        }
+        if (watched == viewport_->viewport() && event->type() == QEvent::MouseButtonRelease) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton && dragging_) {
+                dragging_ = false;
+                viewport_->viewport()->releaseMouse();
+                return true;
+            }
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
     void keyPressEvent(QKeyEvent *event) override
     {
         if (event->key() == Qt::Key_O && event->modifiers().testFlag(Qt::ControlModifier)) {
             openFromFilePicker();
             return;
+        }
+        if (event->key() == Qt::Key_1) {
+            setZoomCentered(1.0);
+            return;
+        }
+        if (event->key() == Qt::Key_F) {
+            fitToViewport();
+            return;
+        }
+        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+            constexpr int KeyboardPanStep = 40;
+            if (event->key() == Qt::Key_Left) {
+                panBy(-KeyboardPanStep, 0);
+                return;
+            }
+            if (event->key() == Qt::Key_Right) {
+                panBy(KeyboardPanStep, 0);
+                return;
+            }
+            if (event->key() == Qt::Key_Up) {
+                panBy(0, -KeyboardPanStep);
+                return;
+            }
+            if (event->key() == Qt::Key_Down) {
+                panBy(0, KeyboardPanStep);
+                return;
+            }
         }
         if (event->key() == Qt::Key_Left) {
             navigate(-1);
@@ -456,7 +543,9 @@ private:
         completedLoops_ = 0;
         animationPaused_ = false;
         pausedDelayMilliseconds_ = 0;
+        applyInitialZoom();
         showFrame(currentFrame_);
+        scheduleCenterView();
         if (currentImage_.frames.size() > 1) {
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
@@ -470,8 +559,109 @@ private:
     void showFrame(const int index)
     {
         image_ = currentImage_.frames.at(index);
-        imageLabel_->setPixmap(QPixmap::fromImage(image_));
-        imageLabel_->setMinimumSize(image_.size());
+        renderImage();
+    }
+
+    double fitZoom() const
+    {
+        if (image_.isNull()) {
+            return 1.0;
+        }
+        const QSize available = viewport_->viewport()->size();
+        return std::min(double(available.width()) / image_.width(),
+                        double(available.height()) / image_.height());
+    }
+
+    void applyInitialZoom()
+    {
+        image_ = currentImage_.frames.at(0);
+        zoom_ = std::min(1.0, fitZoom());
+    }
+
+    void fitToViewport()
+    {
+        if (!image_.isNull()) {
+            setZoomCentered(fitZoom());
+        }
+    }
+
+    void setZoom(const double zoom)
+    {
+        if (image_.isNull()) {
+            return;
+        }
+        zoom_ = std::clamp(zoom, 0.01, 64.0);
+        renderImage();
+    }
+
+    void setZoomCentered(const double zoom)
+    {
+        setZoom(zoom);
+        scheduleCenterView();
+    }
+
+    void zoomAt(const QPointF &viewportPosition, const int angleDelta)
+    {
+        if (image_.isNull() || angleDelta == 0) {
+            return;
+        }
+        auto *horizontal = viewport_->horizontalScrollBar();
+        auto *vertical = viewport_->verticalScrollBar();
+        const QPoint originBefore = imageOrigin();
+        const QPointF imagePoint(
+            (horizontal->value() + viewportPosition.x() - originBefore.x()) / zoom_,
+            (vertical->value() + viewportPosition.y() - originBefore.y()) / zoom_);
+        const double steps = angleDelta / 120.0;
+        setZoom(zoom_ * std::pow(1.25, steps));
+        const QPoint originAfter = imageOrigin();
+        horizontal->setValue(
+            qRound(originAfter.x() + imagePoint.x() * zoom_ - viewportPosition.x()));
+        vertical->setValue(
+            qRound(originAfter.y() + imagePoint.y() * zoom_ - viewportPosition.y()));
+    }
+
+    void panBy(const int horizontalDistance, const int verticalDistance)
+    {
+        auto *horizontal = viewport_->horizontalScrollBar();
+        auto *vertical = viewport_->verticalScrollBar();
+        horizontal->setValue(horizontal->value() + horizontalDistance);
+        vertical->setValue(vertical->value() + verticalDistance);
+    }
+
+    void renderImage()
+    {
+        const QSize displayedSize = displayedImageSize();
+        imageLabel_->setPixmap(
+            QPixmap::fromImage(image_).scaled(displayedSize, Qt::IgnoreAspectRatio,
+                                               Qt::SmoothTransformation));
+        imageLabel_->setFixedSize(displayedSize + viewport_->viewport()->size());
+    }
+
+    QSize displayedImageSize() const
+    {
+        return QSize(qMax(1, qRound(image_.width() * zoom_)),
+                     qMax(1, qRound(image_.height() * zoom_)));
+    }
+
+    QPoint imageOrigin() const
+    {
+        const QSize displayedSize = displayedImageSize();
+        return QPoint((imageLabel_->width() - displayedSize.width()) / 2,
+                      (imageLabel_->height() - displayedSize.height()) / 2);
+    }
+
+    void centerView()
+    {
+        viewport_->horizontalScrollBar()->setValue(
+            viewport_->horizontalScrollBar()->maximum() / 2);
+        viewport_->verticalScrollBar()->setValue(viewport_->verticalScrollBar()->maximum() / 2);
+    }
+
+    void scheduleCenterView()
+    {
+        QTimer::singleShot(0, this, [this] {
+            centerView();
+        });
     }
 
     void advanceAnimation()
@@ -651,6 +841,9 @@ private:
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
     bool animationPaused_ = false;
+    double zoom_ = 1.0;
+    bool dragging_ = false;
+    QPointF lastDragPosition_;
     QHash<QString, CacheEntry> cache_;
     QSet<QString> decodesInFlight_;
     qsizetype cachedBytes_ = 0;
@@ -713,6 +906,10 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%lld\n", static_cast<long long>(window.cacheBytes()));
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("ViewState")) {
+                fprintf(stdout, "%s\n", window.viewState().constData());
+                fflush(stdout);
+                return;
             } else if (input.startsWith("DecodeCount:")) {
                 const QString path = QString::fromUtf8(input.mid(12).trimmed());
                 fprintf(stdout, "%d\n", window.decodeCount(path));
@@ -733,14 +930,47 @@ int main(int argc, char *argv[])
                                  Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(&window, &event);
                 delete mimeData;
+            } else if (input.startsWith("Wheel:")) {
+                const QList<QByteArray> parts = input.trimmed().split(':');
+                if (parts.size() == 4) {
+                    const QPointF position(parts.at(1).toInt(), parts.at(2).toInt());
+                    QWheelEvent event(position, position, QPoint(), QPoint(0, parts.at(3).toInt()),
+                                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                    QApplication::sendEvent(window.findChild<QScrollArea *>()->viewport(), &event);
+                }
+            } else if (input.startsWith("Drag:")) {
+                const QList<QByteArray> parts = input.trimmed().split(':');
+                if (parts.size() == 5) {
+                    QWidget *target = window.findChild<QScrollArea *>()->viewport();
+                    const QPointF start(parts.at(1).toInt(), parts.at(2).toInt());
+                    const QPointF end(parts.at(3).toInt(), parts.at(4).toInt());
+                    QMouseEvent press(QEvent::MouseButtonPress, start, start, start,
+                                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(target, &press);
+                    QMouseEvent move(QEvent::MouseMove, end, end, end, Qt::NoButton,
+                                     Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(target, &move);
+                    QMouseEvent release(QEvent::MouseButtonRelease, end, end, end,
+                                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(target, &release);
+                }
             } else if (!input.startsWith("Capture")) {
                 const bool ctrlO = input.startsWith("CtrlO");
+                const bool shift = input.startsWith("Shift");
                 const int qtKey = ctrlO                         ? Qt::Key_O
+                                  : input.startsWith("Fit")     ? Qt::Key_F
+                                  : input.startsWith("ActualSize") ? Qt::Key_1
+                                  : input.startsWith("ShiftLeft") ? Qt::Key_Left
+                                  : input.startsWith("ShiftRight") ? Qt::Key_Right
+                                  : input.startsWith("ShiftUp") ? Qt::Key_Up
+                                  : input.startsWith("ShiftDown") ? Qt::Key_Down
                                   : input.startsWith("Left")    ? Qt::Key_Left
                                   : input.startsWith("Space")   ? Qt::Key_Space
                                                                 : Qt::Key_Right;
                 QKeyEvent event(QEvent::KeyPress, qtKey,
-                                ctrlO ? Qt::ControlModifier : Qt::NoModifier);
+                                ctrlO    ? Qt::ControlModifier
+                                : shift ? Qt::ShiftModifier
+                                        : Qt::NoModifier);
                 QWidget *target = QApplication::focusWidget();
                 QApplication::sendEvent(target != nullptr ? target : &window, &event);
             }

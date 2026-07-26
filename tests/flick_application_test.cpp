@@ -37,6 +37,9 @@ private slots:
     void animatedGifPreservesTimingAndFiniteLoop();
     void animatedWebpPreservesTimingAndLoops();
     void spacePausesAndResumesAnimationButDoesNotAffectStaticImages();
+    void appliesInitialScalingAndKeyboardZoomModes();
+    void pointerZoomKeepsCursorOnTheSameImagePoint();
+    void pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndResetView();
 
 private:
     struct RunningFlick
@@ -591,6 +594,109 @@ void FlickApplicationTest::spacePausesAndResumesAnimationButDoesNotAffectStaticI
     start(still, {staticPath});
     const QImage before = waitForScreenshot(still);
     QCOMPARE(sendCommandAndWaitForScreenshot(still, QByteArrayLiteral("Space")), before);
+}
+
+void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor color(255, 20, 147);
+    const QString small =
+        writeImage(directory, QStringLiteral("small.png"), color, QSize(120, 80));
+    const QString large =
+        writeImage(directory, QStringLiteral("large.png"), color, QSize(960, 640));
+    QVERIFY(!small.isEmpty());
+    QVERIFY(!large.isEmpty());
+
+    RunningFlick smallFlick;
+    start(smallFlick, {small});
+    const QSize initialSmall = colorBounds(waitForScreenshot(smallFlick), color).size();
+    QCOMPARE(initialSmall.width(), 120);
+    QVERIFY(initialSmall.height() >= 79 && initialSmall.height() <= 80);
+    const QImage smallFit =
+        sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("Fit"));
+    QCOMPARE(colorBounds(smallFit, color).size(), QSize(477, 318));
+    const QImage smallActual =
+        sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("ActualSize"));
+    QCOMPARE(colorBounds(smallActual, color).size(), QSize(120, 80));
+
+    RunningFlick largeFlick;
+    start(largeFlick, {large});
+    QCOMPARE(colorBounds(waitForScreenshot(largeFlick), color).size(), QSize(478, 318));
+    const QImage largeActual =
+        sendCommandAndWaitForScreenshot(largeFlick, QByteArrayLiteral("ActualSize"));
+    QCOMPARE(colorBounds(largeActual, color).size(), QSize(478, 318));
+}
+
+void FlickApplicationTest::pointerZoomKeepsCursorOnTheSameImagePoint()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = writeImage(directory, QStringLiteral("small.png"), QColor(Qt::cyan),
+                                    QSize(120, 80));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    const QList<QByteArray> before =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QCOMPARE(before.size(), 7);
+
+    constexpr int CursorX = 250;
+    constexpr int CursorY = 150;
+    sendCommandAndWaitForScreenshot(
+        flick, QByteArrayLiteral("Wheel:250:150:120"));
+    const QList<QByteArray> after =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QCOMPARE(after.size(), 7);
+    const double oldZoom = before.at(0).toDouble();
+    const double newZoom = after.at(0).toDouble();
+    QVERIFY(newZoom > oldZoom);
+    const double oldImageX = (before.at(1).toInt() + CursorX - before.at(5).toInt()) / oldZoom;
+    const double oldImageY = (before.at(2).toInt() + CursorY - before.at(6).toInt()) / oldZoom;
+    const double newImageX = (after.at(1).toInt() + CursorX - after.at(5).toInt()) / newZoom;
+    const double newImageY = (after.at(2).toInt() + CursorY - after.at(6).toInt()) / newZoom;
+    QVERIFY(qAbs(oldImageX - newImageX) < 1.0);
+    QVERIFY(qAbs(oldImageY - newImageY) < 1.0);
+}
+
+void FlickApplicationTest::pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndResetView()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(255, 69, 0);
+    const QColor secondColor(50, 205, 50);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor,
+                                     QSize(960, 640));
+    const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor,
+                                      QSize(120, 80));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    waitForScreenshot(flick);
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("ActualSize"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Drag:220:160:170:120"));
+    const QList<QByteArray> dragged =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QCOMPARE(dragged.size(), 7);
+    QVERIFY(dragged.at(1).toInt() >= 530);
+    QVERIFY(dragged.at(2).toInt() >= 360);
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("ShiftRight"));
+    const QList<QByteArray> keyboardPanned =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QVERIFY(keyboardPanned.at(1).toInt() > dragged.at(1).toInt());
+
+    const QImage next = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Right"));
+    QVERIFY(containsColor(next, secondColor));
+    const QList<QByteArray> reset =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QCOMPARE(reset.at(0).toDouble(), 1.0);
+    QCOMPARE(reset.at(1).toInt(), 60);
+    QCOMPARE(reset.at(2).toInt(), 40);
 }
 
 QTEST_MAIN(FlickApplicationTest)
