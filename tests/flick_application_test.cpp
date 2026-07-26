@@ -58,7 +58,7 @@ private:
     QByteArray sendQueryAndWaitForReply(RunningFlick &flick, const QByteArray &command);
     QString writeFixture(const QString &encodedName, const QString &imageName);
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
-                              const QColor &color);
+                              const QColor &color, QSize size = QSize(32, 24));
     static bool containsColor(const QImage &image, const QColor &color, int tolerance = 0);
 
     QString executable_;
@@ -197,9 +197,9 @@ QByteArray FlickApplicationTest::sendQueryAndWaitForReply(RunningFlick &flick,
 }
 
 QString FlickApplicationTest::writeImage(const QTemporaryDir &directory, const QString &name,
-                                         const QColor &color)
+                                         const QColor &color, const QSize size)
 {
-    QImage image(QSize(32, 24), QImage::Format_RGB32);
+    QImage image(size, QImage::Format_RGB32);
     image.fill(color);
     const QString path = directory.filePath(name);
     return image.save(path, "PNG") ? path : QString{};
@@ -433,33 +433,44 @@ void FlickApplicationTest::prefetchedImagesAreReusedAndCacheIsBounded()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    const QString first =
-        writeImage(directory, QStringLiteral("image1.png"), QColor(70, 130, 180));
-    const QString second =
-        writeImage(directory, QStringLiteral("image2.png"), QColor(255, 165, 0));
-    const QString third =
-        writeImage(directory, QStringLiteral("image3.png"), QColor(148, 0, 211));
-    QVERIFY(!first.isEmpty());
-    QVERIFY(!second.isEmpty());
-    QVERIFY(!third.isEmpty());
+    QStringList paths;
+    for (int index = 0; index < 10; ++index) {
+        const QString path =
+            writeImage(directory, QStringLiteral("image%1.png").arg(index, 2, 10, QLatin1Char('0')),
+                       QColor::fromHsv(index * 30, 220, 220), QSize(256, 256));
+        QVERIFY(!path.isEmpty());
+        paths.append(path);
+    }
 
-    constexpr int CacheBudgetBytes = 7000;
+    constexpr int CacheBudgetBytes = 600000;
     RunningFlick flick;
-    start(flick, {first}, {}, 0, CacheBudgetBytes);
+    start(flick, {paths.first()}, {}, 0, CacheBudgetBytes);
     waitForScreenshot(flick);
     QTRY_COMPARE_WITH_TIMEOUT(sendQueryAndWaitForReply(flick, QByteArrayLiteral("DecodeCount:") +
-                                                                 second.toUtf8()),
+                                                                 paths.at(1).toUtf8()),
                               QByteArrayLiteral("1"), 5000);
 
     pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
-    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("DecodeCount:") + second.toUtf8()),
+    QCOMPARE(sendQueryAndWaitForReply(flick,
+                                      QByteArrayLiteral("DecodeCount:") + paths.at(1).toUtf8()),
              QByteArrayLiteral("1"));
 
-    pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    for (int index = 2; index < paths.size(); ++index) {
+        pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    }
     const qint64 cachedBytes =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("CacheBytes")).toLongLong();
     QVERIFY(cachedBytes > 0);
     QVERIFY(cachedBytes <= CacheBudgetBytes);
+
+    for (int index = paths.size() - 2; index >= 0; --index) {
+        pressKeyAndWaitForScreenshot(flick, Qt::Key_Left);
+    }
+    QVERIFY(sendQueryAndWaitForReply(flick,
+                                     QByteArrayLiteral("DecodeCount:") + paths.first().toUtf8())
+                .toInt() > 1);
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("CacheBytes")).toLongLong() <=
+            CacheBudgetBytes);
 }
 
 QTEST_MAIN(FlickApplicationTest)

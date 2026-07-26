@@ -435,6 +435,19 @@ void captureVisibleWindow(ViewerWindow &window)
     }
     window.grab().save(screenshotPath, "PNG");
 }
+
+void scheduleCapture(ViewerWindow &window, QObject &context, const bool waitUntilReady)
+{
+    auto capture = std::make_shared<std::function<void()>>();
+    *capture = [&window, &context, waitUntilReady, capture] {
+        if (waitUntilReady && window.isLoading()) {
+            QTimer::singleShot(10, &context, *capture);
+            return;
+        }
+        captureVisibleWindow(window);
+    };
+    QTimer::singleShot(0, &context, *capture);
+}
 #endif
 } // namespace
 
@@ -450,15 +463,7 @@ int main(int argc, char *argv[])
     window.show();
     window.setFocus();
 #ifdef FLICK_ENABLE_TEST_HARNESS
-    auto initialCapture = std::make_shared<std::function<void()>>();
-    *initialCapture = [&application, &window, initialCapture] {
-        if (window.isLoading()) {
-            QTimer::singleShot(10, &application, *initialCapture);
-            return;
-        }
-        captureVisibleWindow(window);
-    };
-    QTimer::singleShot(0, &application, *initialCapture);
+    scheduleCapture(window, application, true);
     QSocketNotifier testCommands(STDIN_FILENO, QSocketNotifier::Read, &application);
     QObject::connect(
         &testCommands, &QSocketNotifier::activated, &application, [&application, &window] {
@@ -502,15 +507,7 @@ int main(int argc, char *argv[])
                 QWidget *target = QApplication::focusWidget();
                 QApplication::sendEvent(target != nullptr ? target : &window, &event);
             }
-            auto captureWhenReady = std::make_shared<std::function<void()>>();
-            *captureWhenReady = [&application, &window, captureImmediately, captureWhenReady] {
-                if (!captureImmediately && window.isLoading()) {
-                    QTimer::singleShot(10, &application, *captureWhenReady);
-                    return;
-                }
-                captureVisibleWindow(window);
-            };
-            QTimer::singleShot(0, &application, *captureWhenReady);
+            scheduleCapture(window, application, !captureImmediately);
         });
 #endif
 

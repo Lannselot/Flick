@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Directory sequence and keyboard navigation.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] Loading and navigation remain responsive while image decoding is in progress.
 - [x] The previous and next sequence items are prefetched when available.
