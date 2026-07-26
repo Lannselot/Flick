@@ -73,15 +73,89 @@ struct AnimationMetadata
 AnimationMetadata gifAnimationMetadata(const QByteArray &data)
 {
     AnimationMetadata metadata;
-    for (qsizetype index = 0; index + 7 < data.size(); ++index) {
-        const auto *bytes = reinterpret_cast<const uchar *>(data.constData() + index);
-        if (bytes[0] == 0x21 && bytes[1] == 0xf9 && bytes[2] == 0x04) {
-            metadata.frameDelays.append(std::max(10, 10 * qFromLittleEndian<quint16>(bytes + 4)));
-        } else if (index + 18 < data.size() && bytes[0] == 0x21 && bytes[1] == 0xff &&
-                   data.mid(index + 3, 11) == QByteArrayLiteral("NETSCAPE2.0") &&
-                   bytes[14] == 0x03 && bytes[15] == 0x01) {
-            const quint16 loopCount = qFromLittleEndian<quint16>(bytes + 16);
+    if (data.size() < 13) {
+        return metadata;
+    }
+    const auto byteAt = [&data](const qsizetype index) {
+        return static_cast<uchar>(data.at(index));
+    };
+    const auto skipSubBlocks = [&data, &byteAt](qsizetype &offset) {
+        while (offset < data.size()) {
+            const qsizetype blockSize = byteAt(offset++);
+            if (blockSize == 0) {
+                return true;
+            }
+            if (offset + blockSize > data.size()) {
+                return false;
+            }
+            offset += blockSize;
+        }
+        return false;
+    };
+
+    qsizetype offset = 13;
+    const uchar logicalScreenFlags = byteAt(10);
+    if (logicalScreenFlags & 0x80) {
+        offset += 3 * (1 << ((logicalScreenFlags & 0x07) + 1));
+    }
+    int pendingFrameDelay = 100;
+    while (offset < data.size()) {
+        const uchar blockType = byteAt(offset++);
+        if (blockType == 0x3b) {
+            break;
+        }
+        if (blockType == 0x2c) {
+            if (offset + 9 > data.size()) {
+                break;
+            }
+            const uchar imageFlags = byteAt(offset + 8);
+            offset += 9;
+            if (imageFlags & 0x80) {
+                offset += 3 * (1 << ((imageFlags & 0x07) + 1));
+            }
+            if (offset >= data.size()) {
+                break;
+            }
+            ++offset;
+            if (!skipSubBlocks(offset)) {
+                break;
+            }
+            metadata.frameDelays.append(pendingFrameDelay);
+            pendingFrameDelay = 100;
+            continue;
+        }
+        if (blockType != 0x21 || offset >= data.size()) {
+            break;
+        }
+        const uchar extensionType = byteAt(offset++);
+        if (extensionType == 0xf9) {
+            if (offset + 6 > data.size() || byteAt(offset) != 4) {
+                break;
+            }
+            const auto *delayBytes =
+                reinterpret_cast<const uchar *>(data.constData() + offset + 2);
+            pendingFrameDelay = 10 * qFromLittleEndian<quint16>(delayBytes);
+            offset += 6;
+            continue;
+        }
+        if (offset >= data.size()) {
+            break;
+        }
+        const qsizetype headerSize = byteAt(offset++);
+        if (offset + headerSize > data.size()) {
+            break;
+        }
+        const QByteArray applicationIdentifier = data.mid(offset, headerSize);
+        offset += headerSize;
+        if (extensionType == 0xff && applicationIdentifier == QByteArrayLiteral("NETSCAPE2.0") &&
+            offset + 5 <= data.size() && byteAt(offset) == 3 && byteAt(offset + 1) == 1) {
+            const auto *loopBytes =
+                reinterpret_cast<const uchar *>(data.constData() + offset + 2);
+            const quint16 loopCount = qFromLittleEndian<quint16>(loopBytes);
             metadata.repetitions = loopCount == 0 ? -1 : loopCount;
+        }
+        if (!skipSubBlocks(offset)) {
+            break;
         }
     }
     return metadata;
@@ -108,7 +182,7 @@ AnimationMetadata webpAnimationMetadata(const QByteArray &data)
             const quint16 playCount = qFromLittleEndian<quint16>(chunk + 4);
             metadata.repetitions = playCount == 0 ? -1 : std::max(0, int(playCount) - 1);
         } else if (chunkName == QByteArrayLiteral("ANMF") && chunkSize >= 16) {
-            metadata.frameDelays.append(std::max(1, int(littleEndian24(chunk + 12))));
+            metadata.frameDelays.append(int(littleEndian24(chunk + 12)));
         }
         offset += 8 + chunkSize + (chunkSize & 1U);
     }
@@ -384,7 +458,7 @@ private:
         pausedDelayMilliseconds_ = 0;
         showFrame(currentFrame_);
         if (currentImage_.frames.size() > 1) {
-            animationTimer_->start(currentImage_.frameDelays.at(currentFrame_));
+            animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
         emptyState_->hide();
         viewport_->show();
@@ -414,7 +488,7 @@ private:
             return;
         }
         showFrame(currentFrame_);
-        animationTimer_->start(currentImage_.frameDelays.at(currentFrame_));
+        animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
     }
 
     void toggleAnimation()
