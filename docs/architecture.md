@@ -20,8 +20,7 @@ flowchart TB
         Cache[Decoded image cache<br/>512 MB byte budget]
         Image[QImage frames<br/>декодированные пиксели]
         Animation[Animation timer<br/>frame delays and loops]
-        Pixmap[QPixmap]
-        Label[QLabel]
+        Canvas[ImageCanvas<br/>clipped painting]
         Viewport[QScrollArea]
         Feedback[Empty state и<br/>временные сообщения]
         Settings[QSettings]
@@ -35,10 +34,9 @@ flowchart TB
         Reader --> Image
         Image --> Cache
         Cache --> Animation
-        Animation --> Pixmap
-        Cache --> Pixmap
-        Pixmap --> Label
-        Label --> Viewport
+        Animation --> Canvas
+        Cache --> Canvas
+        Canvas --> Viewport
         Window --> Feedback
         Window --> Settings
     end
@@ -88,7 +86,7 @@ sequenceDiagram
     alt Декодирование успешно
         Window->>Window: Добавляет QImage в ограниченный кеш
         Window->>Window: Сверяет путь с последним запросом
-        Window->>UI: QPixmap::fromImage(image_)
+        Window->>UI: ImageCanvas::showImage(image_)
         Window->>Reader: Предзагружает соседние элементы
         UI-->>User: Показывает изображение
     else Получен пустой QImage
@@ -122,6 +120,11 @@ fit-to-viewport)`. Масштаб хранится отдельно от дек�
 позиции. Обычные стрелки влево и вправо по-прежнему управляют
 последовательностью и при смене изображения сбрасывают вид к начальному
 масштабу.
+
+`ImageCanvas` хранит исходный `QImage`, но не создаёт полный увеличенный
+`QPixmap`. В `paintEvent` он сопоставляет видимую часть холста с соответствующим
+прямоугольником исходных пикселей и масштабирует только этот фрагмент. Поэтому
+память рендера определяется размером viewport, а не квадратом масштаба.
 
 Клавиши `L` и `R` временно поворачивают уже автоматически ориентированный кадр
 на 90 градусов влево или вправо перед масштабированием. Масштабирование,

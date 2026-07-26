@@ -38,6 +38,7 @@ private slots:
     void animatedWebpPreservesTimingAndLoops();
     void spacePausesAndResumesAnimationButDoesNotAffectStaticImages();
     void appliesInitialScalingAndKeyboardZoomModes();
+    void highZoomRemainsResponsiveWithoutAllocatingTheFullScaledImage();
     void pointerZoomKeepsCursorOnTheSameImagePoint();
     void pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndResetView();
     void wheelActionDefaultsToNavigationWithCtrlZoom();
@@ -678,6 +679,46 @@ void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
     const QImage largeActual =
         sendCommandAndWaitForScreenshot(largeFlick, QByteArrayLiteral("ActualSize"));
     QCOMPARE(colorBounds(largeActual, color).size(), QSize(478, 318));
+}
+
+void FlickApplicationTest::highZoomRemainsResponsiveWithoutAllocatingTheFullScaledImage()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = writeImage(directory, QStringLiteral("large.png"), QColor(Qt::cyan),
+                                    QSize(960, 640));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("ActualSize"));
+    for (int step = 0; step < 10; ++step) {
+        sendCommand(flick, QByteArrayLiteral("CtrlPlus"));
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState"));
+    }
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState"))
+                 .split(',')
+                 .first()
+                 .toDouble(),
+             9.313226);
+
+    QFile processStatus(
+        QStringLiteral("/proc/%1/status").arg(flick.process.processId()));
+    QVERIFY(processStatus.open(QIODevice::ReadOnly));
+    const QByteArray status = processStatus.readAll();
+    const qsizetype residentMemoryLine = status.indexOf("VmRSS:");
+    QVERIFY(residentMemoryLine >= 0);
+    const QByteArray residentMemory =
+        status.mid(residentMemoryLine + 6, status.indexOf('\n', residentMemoryLine) -
+                                               residentMemoryLine - 6)
+            .trimmed()
+            .split(' ')
+            .first();
+    QVERIFY2(residentMemory.toLongLong() < 128 * 1024,
+             qPrintable(QStringLiteral("Flick used %1 kB at 931% zoom")
+                            .arg(QString::fromLatin1(residentMemory))));
+    QVERIFY(flick.process.state() == QProcess::Running);
 }
 
 void FlickApplicationTest::pointerZoomKeepsCursorOnTheSameImagePoint()

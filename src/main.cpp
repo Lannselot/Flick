@@ -26,6 +26,8 @@
 #include <QLocale>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
@@ -227,6 +229,47 @@ AnimationMetadata animationMetadata(const QString &path)
     return {};
 }
 
+class ImageCanvas final : public QLabel
+{
+public:
+    void showImage(const QImage &image, const QSize &displayedSize, const QSize &viewportSize)
+    {
+        image_ = image;
+        displayedSize_ = displayedSize;
+        setFixedSize(displayedSize + viewportSize);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        if (image_.isNull()) {
+            return;
+        }
+        QPainter painter(this);
+        painter.setClipRect(event->rect());
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        const QRect target((width() - displayedSize_.width()) / 2,
+                           (height() - displayedSize_.height()) / 2,
+                           displayedSize_.width(), displayedSize_.height());
+        const QRect visibleTarget = target.intersected(event->rect());
+        if (visibleTarget.isEmpty()) {
+            return;
+        }
+        const double sourceScaleX = double(image_.width()) / target.width();
+        const double sourceScaleY = double(image_.height()) / target.height();
+        const QRectF source((visibleTarget.left() - target.left()) * sourceScaleX,
+                            (visibleTarget.top() - target.top()) * sourceScaleY,
+                            visibleTarget.width() * sourceScaleX,
+                            visibleTarget.height() * sourceScaleY);
+        painter.drawImage(QRectF(visibleTarget), image_, source);
+    }
+
+private:
+    QImage image_;
+    QSize displayedSize_;
+};
+
 class ViewerWindow final : public QWidget
 {
 public:
@@ -245,7 +288,7 @@ public:
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
 
-        imageLabel_ = new QLabel;
+        imageLabel_ = new ImageCanvas;
         imageLabel_->setObjectName(QStringLiteral("imageLabel"));
         imageLabel_->setAlignment(Qt::AlignCenter);
         imageLabel_->setMouseTracking(true);
@@ -1004,10 +1047,7 @@ private:
     void renderImage()
     {
         const QSize displayedSize = displayedImageSize();
-        imageLabel_->setPixmap(
-            QPixmap::fromImage(rotatedImage()).scaled(displayedSize, Qt::IgnoreAspectRatio,
-                                                       Qt::SmoothTransformation));
-        imageLabel_->setFixedSize(displayedSize + viewport_->viewport()->size());
+        imageLabel_->showImage(rotatedImage(), displayedSize, viewport_->viewport()->size());
     }
 
     QImage rotatedImage() const
@@ -1215,7 +1255,7 @@ private:
     }
 
     QImage image_;
-    QLabel *imageLabel_ = nullptr;
+    ImageCanvas *imageLabel_ = nullptr;
     QScrollArea *viewport_ = nullptr;
     QLabel *boundaryMessage_ = nullptr;
     QTimer *boundaryTimer_ = nullptr;
