@@ -43,6 +43,9 @@ private slots:
     void wheelActionDefaultsToNavigationWithCtrlZoom();
     void wheelActionCanSwitchToZoomWithCtrlNavigation();
     void temporarilyRotatesCurrentViewAndResetsOnNavigation();
+    void togglesFullscreenFromKeyboardAndPointer();
+    void transientStatusReportsViewContextAndReappearsOnMouseMovement();
+    void fullscreenInactivityHidesStatusAndPointerWithoutBlockingKeyboard();
 
 private:
     struct RunningFlick
@@ -860,6 +863,101 @@ void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()
         sendCommandAndWaitForScreenshot(asynchronous, QByteArrayLiteral("RotateRight"));
     const QSize loadedSize = colorBounds(loaded, secondColor).size();
     QVERIFY(loadedSize.width() > loadedSize.height());
+}
+
+void FlickApplicationTest::togglesFullscreenFromKeyboardAndPointer()
+{
+    const QString path =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("fullscreen.png"));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("windowed"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("F11"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("fullscreen"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("windowed"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("DoubleClick:250:150"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("fullscreen"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("DoubleClick:250:150"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("windowed"));
+}
+
+void FlickApplicationTest::transientStatusReportsViewContextAndReappearsOnMouseMovement()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString first =
+        writeImage(directory, QStringLiteral("image1.png"), QColor(Qt::red), QSize(120, 80));
+    const QString second =
+        writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::green), QSize(120, 80));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    waitForScreenshot(flick);
+    QList<QByteArray> state =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(1), QByteArrayLiteral("status-visible"));
+    QCOMPARE(state.at(3), QByteArrayLiteral("image1.png — 1 / 2 — 100%"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlWheel:250:150:120"));
+    state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(3), QByteArrayLiteral("image1.png — 1 / 2 — 125%"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Right"));
+    state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(3), QByteArrayLiteral("image2.png — 2 / 2 — 100%"));
+
+    QTest::qWait(2200);
+    state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(1), QByteArrayLiteral("status-hidden"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Move:200:120"));
+    state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(1), QByteArrayLiteral("status-visible"));
+}
+
+void FlickApplicationTest::fullscreenInactivityHidesStatusAndPointerWithoutBlockingKeyboard()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString first =
+        writeImage(directory, QStringLiteral("image1.png"), QColor(Qt::red), QSize(120, 80));
+    const QString second =
+        writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::green), QSize(120, 80));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    waitForScreenshot(flick);
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("F11"));
+    QTest::qWait(2200);
+    QList<QByteArray> state =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(1), QByteArrayLiteral("status-hidden"));
+    QCOMPARE(state.at(2), QByteArrayLiteral("pointer-hidden"));
+
+    const QImage next = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Right"));
+    QVERIFY(containsColor(next, QColor(Qt::green)));
+    state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(0), QByteArrayLiteral("fullscreen"));
+    QCOMPARE(state.at(1), QByteArrayLiteral("status-visible"));
+    QCOMPARE(state.at(2), QByteArrayLiteral("pointer-hidden"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Move:200:120"));
+    state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
+    QCOMPARE(state.at(1), QByteArrayLiteral("status-visible"));
+    QCOMPARE(state.at(2), QByteArrayLiteral("pointer-visible"));
 }
 
 QTEST_MAIN(FlickApplicationTest)

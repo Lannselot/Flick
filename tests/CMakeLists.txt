@@ -13,5 +13,5 @@ target_compile_definitions(flick_application_test PRIVATE
 add_test(NAME flick.application COMMAND flick_application_test)
 set_tests_properties(flick.application PROPERTIES
     ENVIRONMENT "FLICK_EXECUTABLE=$<TARGET_FILE:flick>;QT_QPA_PLATFORM=offscreen"
-    TIMEOUT 20
+    TIMEOUT 30
 )

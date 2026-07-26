@@ -6,8 +6,8 @@
 
 **Status:** ready-for-agent
 
-- [ ] F11 and double-click toggle fullscreen, and Esc returns from fullscreen to windowed mode.
-- [ ] The normal window has system decoration, an image viewport, and no permanent toolbar.
-- [ ] A transient status display reports filename, sequence position, and current zoom.
-- [ ] Mouse movement makes status information visible again.
-- [ ] In fullscreen, inactivity hides both the status display and pointer without preventing keyboard control.
+- [x] F11 and double-click toggle fullscreen, and Esc returns from fullscreen to windowed mode.
+- [x] The normal window has system decoration, an image viewport, and no permanent toolbar.
+- [x] A transient status display reports filename, sequence position, and current zoom.
+- [x] Mouse movement makes status information visible again.
+- [x] In fullscreen, inactivity hides both the status display and pointer without preventing keyboard control.

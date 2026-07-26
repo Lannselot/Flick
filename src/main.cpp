@@ -5,6 +5,7 @@
 #include <QActionGroup>
 #include <QCollator>
 #include <QContextMenuEvent>
+#include <QCursor>
 #include <QFutureWatcher>
 #include <QHash>
 #include <QDir>
@@ -49,6 +50,7 @@
 namespace {
 constexpr auto EmptyStateText = "No image open";
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
+constexpr int StatusVisibilityMilliseconds = 2000;
 
 enum class WheelAction
 {
@@ -248,6 +250,7 @@ public:
         viewport_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         viewport_->setWidget(imageLabel_);
         viewport_->viewport()->installEventFilter(this);
+        viewport_->viewport()->setMouseTracking(true);
         viewport_->setContextMenuPolicy(Qt::ActionsContextMenu);
         auto *wheelActionGroup = new QActionGroup(this);
         wheelActionGroup->setExclusive(true);
@@ -285,6 +288,23 @@ public:
         animationTimer_->setSingleShot(true);
         QObject::connect(animationTimer_, &QTimer::timeout, this, [this] {
             advanceAnimation();
+        });
+
+        statusDisplay_ = new QLabel(viewport_->viewport());
+        statusDisplay_->setAlignment(Qt::AlignCenter);
+        statusDisplay_->setAccessibleName(tr("Image status"));
+        statusDisplay_->setAttribute(Qt::WA_TransparentForMouseEvents);
+        statusDisplay_->setStyleSheet(QStringLiteral(
+            "QLabel { color: white; background-color: rgba(0, 0, 0, 180);"
+            " padding: 6px 10px; border-radius: 4px; }"));
+        statusDisplay_->hide();
+        statusTimer_ = new QTimer(this);
+        statusTimer_->setSingleShot(true);
+        QObject::connect(statusTimer_, &QTimer::timeout, this, [this] {
+            statusDisplay_->hide();
+            if (isFullScreen()) {
+                viewport_->viewport()->setCursor(Qt::BlankCursor);
+            }
         });
 
         emptyState_ = new QLabel(tr(EmptyStateText));
@@ -327,11 +347,30 @@ public:
                QByteArray::number(imageOrigin().x()) + ',' +
                QByteArray::number(imageOrigin().y());
     }
+
+    QByteArray uiState() const
+    {
+        return QByteArray(isFullScreen() ? "fullscreen" : "windowed") + '|' +
+               (statusDisplay_->isVisible() ? "status-visible" : "status-hidden") + '|' +
+               (viewport_->viewport()->cursor().shape() == Qt::BlankCursor ? "pointer-hidden"
+                                                                           : "pointer-visible") +
+               '|' + statusDisplay_->text().toUtf8();
+    }
 #endif
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
+        if (watched == viewport_->viewport() && event->type() == QEvent::Resize) {
+            positionStatusDisplay();
+        }
+        if (watched == viewport_->viewport() && event->type() == QEvent::MouseMove) {
+            showStatus(true);
+        }
+        if (watched == viewport_->viewport() && event->type() == QEvent::MouseButtonDblClick) {
+            toggleFullscreen();
+            return true;
+        }
         if (watched == viewport_->viewport() && event->type() == QEvent::Wheel) {
             const auto *wheel = static_cast<QWheelEvent *>(event);
             const int wheelDelta = wheel->angleDelta().y() != 0
@@ -380,6 +419,14 @@ protected:
 
     void keyPressEvent(QKeyEvent *event) override
     {
+        if (event->key() == Qt::Key_F11) {
+            toggleFullscreen();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape && isFullScreen()) {
+            leaveFullscreen();
+            return;
+        }
         if (event->key() == Qt::Key_O && event->modifiers().testFlag(Qt::ControlModifier)) {
             openFromFilePicker();
             return;
@@ -460,6 +507,64 @@ private:
         QSettings().setValue(QStringLiteral("view/wheelAction"),
                              action == WheelAction::Zoom ? QStringLiteral("zoom")
                                                          : QStringLiteral("navigate"));
+    }
+
+    void toggleFullscreen()
+    {
+        if (isFullScreen()) {
+            leaveFullscreen();
+        } else {
+            showFullScreen();
+            showStatus(true);
+        }
+    }
+
+    void leaveFullscreen()
+    {
+        showNormal();
+        viewport_->viewport()->unsetCursor();
+        showStatus(false);
+    }
+
+    void updateStatusText()
+    {
+        if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
+            return;
+        }
+        statusDisplay_->setText(
+            tr("%1 — %2 / %3 — %4%")
+                .arg(QFileInfo(requestedPath_).fileName())
+                .arg(currentIndex_ + 1)
+                .arg(sequence_.size())
+                .arg(qRound(zoom_ * 100)));
+        statusDisplay_->adjustSize();
+        positionStatusDisplay();
+    }
+
+    void positionStatusDisplay()
+    {
+        if (statusDisplay_ == nullptr || viewport_ == nullptr) {
+            return;
+        }
+        constexpr int BottomMargin = 12;
+        const QSize viewportSize = viewport_->viewport()->size();
+        statusDisplay_->move((viewportSize.width() - statusDisplay_->width()) / 2,
+                             viewportSize.height() - statusDisplay_->height() - BottomMargin);
+        statusDisplay_->raise();
+    }
+
+    void showStatus(const bool revealPointer)
+    {
+        if (currentIndex_ < 0) {
+            return;
+        }
+        updateStatusText();
+        statusDisplay_->show();
+        statusDisplay_->raise();
+        if (revealPointer) {
+            viewport_->viewport()->unsetCursor();
+        }
+        statusTimer_->start(StatusVisibilityMilliseconds);
     }
 
     static bool isSupportedImage(const QString &path)
@@ -603,6 +708,7 @@ private:
         rotationQuarterTurns_ = 0;
         applyInitialZoom();
         showFrame(currentFrame_);
+        showStatus(false);
         scheduleCenterView();
         if (currentImage_.frames.size() > 1) {
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
@@ -651,6 +757,7 @@ private:
         }
         zoom_ = std::clamp(zoom, 0.01, 64.0);
         renderImage();
+        showStatus(false);
     }
 
     void setZoomCentered(const double zoom)
@@ -920,6 +1027,8 @@ private:
     QTimer *boundaryTimer_ = nullptr;
     QTimer *animationTimer_ = nullptr;
     QLabel *emptyState_ = nullptr;
+    QLabel *statusDisplay_ = nullptr;
+    QTimer *statusTimer_ = nullptr;
     QStringList sequence_;
     int currentIndex_ = -1;
     QString requestedPath_;
@@ -999,6 +1108,10 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.viewState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("UiState")) {
+                fprintf(stdout, "%s\n", window.uiState().constData());
+                fflush(stdout);
+                return;
             } else if (input.startsWith("DecodeCount:")) {
                 const QString path = QString::fromUtf8(input.mid(12).trimmed());
                 fprintf(stdout, "%d\n", window.decodeCount(path));
@@ -1061,6 +1174,20 @@ int main(int argc, char *argv[])
                                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
                     QApplication::sendEvent(target, &release);
                 }
+            } else if (input.startsWith("Move:") || input.startsWith("DoubleClick:")) {
+                const QList<QByteArray> parts = input.trimmed().split(':');
+                if (parts.size() == 3) {
+                    QWidget *target = window.findChild<QScrollArea *>()->viewport();
+                    const QPointF position(parts.at(1).toInt(), parts.at(2).toInt());
+                    const QEvent::Type type = input.startsWith("DoubleClick:")
+                                                  ? QEvent::MouseButtonDblClick
+                                                  : QEvent::MouseMove;
+                    const Qt::MouseButton button =
+                        type == QEvent::MouseButtonDblClick ? Qt::LeftButton : Qt::NoButton;
+                    QMouseEvent event(type, position, position, position, button, button,
+                                      Qt::NoModifier);
+                    QApplication::sendEvent(target, &event);
+                }
             } else if (!input.startsWith("Capture")) {
                 const bool ctrlO = input.startsWith("CtrlO");
                 const bool shift = input.startsWith("Shift");
@@ -1073,6 +1200,8 @@ int main(int argc, char *argv[])
                                   : input.startsWith("ShiftDown") ? Qt::Key_Down
                                   : input.startsWith("RotateLeft") ? Qt::Key_L
                                   : input.startsWith("RotateRight") ? Qt::Key_R
+                                  : input.startsWith("F11")     ? Qt::Key_F11
+                                  : input.startsWith("Escape")  ? Qt::Key_Escape
                                   : input.startsWith("Left")    ? Qt::Key_Left
                                   : input.startsWith("Space")   ? Qt::Key_Space
                                                                 : Qt::Key_Right;
