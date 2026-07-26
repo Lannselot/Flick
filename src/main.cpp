@@ -537,6 +537,22 @@ public:
                (restoreWindowGeometry_ ? "restore" : "forget");
     }
 
+    QByteArray windowGeometryState() const
+    {
+        return QByteArray::number(width()) + 'x' + QByteArray::number(height());
+    }
+
+    void persistWindowGeometry()
+    {
+        QSettings settings;
+        if (restoreWindowGeometry_) {
+            settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+        } else {
+            settings.remove(QStringLiteral("window/geometry"));
+        }
+        settings.sync();
+    }
+
     void applyTestSettings(const QStringList &values)
     {
         if (values.size() != 5) {
@@ -557,13 +573,7 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override
     {
-        QSettings settings;
-        if (restoreWindowGeometry_) {
-            settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
-        } else {
-            settings.remove(QStringLiteral("window/geometry"));
-        }
-        settings.sync();
+        persistWindowGeometry();
         QWidget::closeEvent(event);
     }
 
@@ -765,17 +775,27 @@ private:
         viewport_->viewport()->setPalette(palette);
     }
 
+    bool evictLeastRecentlyUsed()
+    {
+        QString oldestPath;
+        quint64 oldestUse = std::numeric_limits<quint64>::max();
+        for (auto it = cache_.cbegin(); it != cache_.cend(); ++it) {
+            if (it.value().lastUse < oldestUse && it.key() != requestedPath_) {
+                oldestPath = it.key();
+                oldestUse = it.value().lastUse;
+            }
+        }
+        if (oldestPath.isEmpty()) {
+            return false;
+        }
+        cachedBytes_ -= cache_.value(oldestPath).decoded.sizeInBytes();
+        cache_.remove(oldestPath);
+        return true;
+    }
+
     void trimCacheToBudget()
     {
-        while (cachedBytes_ > cacheBudgetBytes_ && !cache_.isEmpty()) {
-            auto oldest = cache_.cbegin();
-            for (auto it = cache_.cbegin(); it != cache_.cend(); ++it) {
-                if (it->lastUse < oldest->lastUse) {
-                    oldest = it;
-                }
-            }
-            cachedBytes_ -= oldest->decoded.sizeInBytes();
-            cache_.erase(oldest);
+        while (cachedBytes_ > cacheBudgetBytes_ && evictLeastRecentlyUsed()) {
         }
     }
 
@@ -1173,8 +1193,7 @@ private:
             showFeedback(tr("Unsupported image"));
             return;
         }
-        QSettings().setValue(QStringLiteral("filePicker/lastDirectory"),
-                             QFileInfo(selectedPath).absolutePath());
+        pendingFilePickerPath_ = QFileInfo(selectedPath).canonicalFilePath();
         openDirectoryBacked(selectedPath);
     }
 
@@ -1259,6 +1278,13 @@ private:
         errorState_->hide();
         largeImageWarning_->hide();
         viewport_->show();
+        if (path == pendingFilePickerPath_) {
+            QSettings settings;
+            settings.setValue(QStringLiteral("filePicker/lastDirectory"),
+                              QFileInfo(path).absolutePath());
+            settings.sync();
+            pendingFilePickerPath_.clear();
+        }
         for (QAction *action : imageActions_) {
             action->setEnabled(true);
         }
@@ -1592,21 +1618,7 @@ private:
         }
         cache_.insert(path, CacheEntry{decoded, ++accessCounter_});
         cachedBytes_ += bytes;
-        while (cachedBytes_ > cacheBudgetBytes_ && !cache_.isEmpty()) {
-            QString oldestPath;
-            quint64 oldestUse = std::numeric_limits<quint64>::max();
-            for (auto it = cache_.cbegin(); it != cache_.cend(); ++it) {
-                if (it.value().lastUse < oldestUse && it.key() != requestedPath_) {
-                    oldestPath = it.key();
-                    oldestUse = it.value().lastUse;
-                }
-            }
-            if (oldestPath.isEmpty()) {
-                break;
-            }
-            cachedBytes_ -= cache_.value(oldestPath).decoded.sizeInBytes();
-            cache_.remove(oldestPath);
-        }
+        trimCacheToBudget();
     }
 
     void prefetchNeighbors()
@@ -1697,6 +1709,7 @@ private:
     QStringList sequence_;
     int currentIndex_ = -1;
     QString requestedPath_;
+    QString pendingFilePickerPath_;
     QString pendingFeedback_;
     DecodedImage currentImage_;
     int currentFrame_ = 0;
@@ -1781,9 +1794,28 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.settingsState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("WindowGeometry")) {
+                fprintf(stdout, "%s\n", window.windowGeometryState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("SaveWindowGeometry")) {
+                window.persistWindowGeometry();
+                fprintf(stdout, "saved\n");
+                fflush(stdout);
+                return;
             } else if (input.startsWith("ApplySettings:")) {
                 window.applyTestSettings(
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
+                return;
+            } else if (input.startsWith("Resize:")) {
+                const QList<QByteArray> size = input.mid(7).trimmed().split(':');
+                if (size.size() == 2) {
+                    window.resize(size.at(0).toInt(), size.at(1).toInt());
+                }
+                return;
+            } else if (input.startsWith("Close")) {
+                window.close();
+                application.quit();
                 return;
             } else if (input.startsWith("ViewState")) {
                 fprintf(stdout, "%s\n", window.viewState().constData());

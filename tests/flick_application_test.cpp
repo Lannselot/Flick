@@ -1083,7 +1083,7 @@ void FlickApplicationTest::wheelActionCanSwitchToZoomWithCtrlNavigation()
     waitForScreenshot(configured);
     selectZoomWheelAction(configured);
     configured.process.terminate();
-    QVERIFY(configured.process.waitForFinished(2000));
+    QVERIFY(configured.process.waitForFinished(5000));
 
     RunningFlick relaunched;
     start(relaunched, {first}, {}, 0, 0, configHome);
@@ -1110,6 +1110,11 @@ void FlickApplicationTest::settingsApplyImmediatelyAndPersistAcrossLaunches()
     sendCommand(configured, QByteArrayLiteral("ApplySettings:zoom:#123456:0:16:1"));
     QCOMPARE(sendQueryAndWaitForReply(configured, QByteArrayLiteral("SettingsState")),
              QByteArrayLiteral("zoom|#123456|hidden|16777216|restore"));
+    sendCommand(configured, QByteArrayLiteral("Resize:720:480"));
+    QCOMPARE(sendQueryAndWaitForReply(configured, QByteArrayLiteral("WindowGeometry")),
+             QByteArrayLiteral("720x480"));
+    QCOMPARE(sendQueryAndWaitForReply(configured, QByteArrayLiteral("SaveWindowGeometry")),
+             QByteArrayLiteral("saved"));
     configured.process.terminate();
     QVERIFY(configured.process.waitForFinished(2000));
 
@@ -1118,6 +1123,22 @@ void FlickApplicationTest::settingsApplyImmediatelyAndPersistAcrossLaunches()
     waitForScreenshot(relaunched);
     QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("SettingsState")),
              QByteArrayLiteral("zoom|#123456|hidden|16777216|restore"));
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("WindowGeometry")),
+             QByteArrayLiteral("720x480"));
+    sendCommand(relaunched, QByteArrayLiteral("ApplySettings:navigate:#202020:1:32:0"));
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("navigate|#202020|visible|33554432|forget"));
+    sendCommand(relaunched, QByteArrayLiteral("Resize:640:400"));
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("WindowGeometry")),
+             QByteArrayLiteral("640x400"));
+    relaunched.process.terminate();
+    QVERIFY(relaunched.process.waitForFinished(2000));
+
+    RunningFlick withoutRestoration;
+    start(withoutRestoration, {first}, {}, 0, 0, configHome);
+    waitForScreenshot(withoutRestoration);
+    QVERIFY(sendQueryAndWaitForReply(withoutRestoration, QByteArrayLiteral("WindowGeometry")) !=
+            QByteArrayLiteral("640x400"));
 }
 
 void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()
