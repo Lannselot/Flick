@@ -845,6 +845,21 @@ void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()
 
     QVERIFY(source.open(QIODevice::ReadOnly));
     QCOMPARE(source.readAll(), bytesBefore);
+
+    QTemporaryDir otherDirectory;
+    QVERIFY(otherDirectory.isValid());
+    const QString incoming =
+        writeImage(otherDirectory, QStringLiteral("incoming.png"), secondColor, QSize(120, 80));
+    QVERIFY(!incoming.isEmpty());
+
+    RunningFlick asynchronous;
+    start(asynchronous, {first}, {}, 250);
+    waitForScreenshot(asynchronous);
+    sendCommand(asynchronous, QByteArrayLiteral("Drop:") + incoming.toUtf8());
+    const QImage loaded =
+        sendCommandAndWaitForScreenshot(asynchronous, QByteArrayLiteral("RotateRight"));
+    const QSize loadedSize = colorBounds(loaded, secondColor).size();
+    QVERIFY(loadedSize.width() > loadedSize.height());
 }
 
 QTEST_MAIN(FlickApplicationTest)

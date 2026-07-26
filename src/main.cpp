@@ -600,6 +600,7 @@ private:
         completedLoops_ = 0;
         animationPaused_ = false;
         pausedDelayMilliseconds_ = 0;
+        rotationQuarterTurns_ = 0;
         applyInitialZoom();
         showFrame(currentFrame_);
         scheduleCenterView();
