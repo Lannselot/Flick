@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QImageReader>
@@ -21,6 +22,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtEndian>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -43,8 +45,91 @@ constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 struct DecodedImage
 {
     QString path;
-    QImage image;
+    QList<QImage> frames;
+    QList<int> frameDelays;
+    int loopCount = 0;
+
+    bool isNull() const
+    {
+        return frames.isEmpty() || frames.first().isNull();
+    }
+
+    qsizetype sizeInBytes() const
+    {
+        qsizetype bytes = 0;
+        for (const QImage &frame : frames) {
+            bytes += frame.sizeInBytes();
+        }
+        return bytes;
+    }
 };
+
+struct AnimationMetadata
+{
+    QList<int> frameDelays;
+    int repetitions = 0;
+};
+
+AnimationMetadata gifAnimationMetadata(const QByteArray &data)
+{
+    AnimationMetadata metadata;
+    for (qsizetype index = 0; index + 7 < data.size(); ++index) {
+        const auto *bytes = reinterpret_cast<const uchar *>(data.constData() + index);
+        if (bytes[0] == 0x21 && bytes[1] == 0xf9 && bytes[2] == 0x04) {
+            metadata.frameDelays.append(std::max(10, 10 * qFromLittleEndian<quint16>(bytes + 4)));
+        } else if (index + 18 < data.size() && bytes[0] == 0x21 && bytes[1] == 0xff &&
+                   data.mid(index + 3, 11) == QByteArrayLiteral("NETSCAPE2.0") &&
+                   bytes[14] == 0x03 && bytes[15] == 0x01) {
+            const quint16 loopCount = qFromLittleEndian<quint16>(bytes + 16);
+            metadata.repetitions = loopCount == 0 ? -1 : loopCount;
+        }
+    }
+    return metadata;
+}
+
+quint32 littleEndian24(const uchar *bytes)
+{
+    return quint32(bytes[0]) | (quint32(bytes[1]) << 8) | (quint32(bytes[2]) << 16);
+}
+
+AnimationMetadata webpAnimationMetadata(const QByteArray &data)
+{
+    AnimationMetadata metadata;
+    qsizetype offset = 12;
+    while (offset + 8 <= data.size()) {
+        const QByteArray chunkName = data.mid(offset, 4);
+        const auto *chunk = reinterpret_cast<const uchar *>(data.constData() + offset + 8);
+        const quint32 chunkSize =
+            qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(data.constData() + offset + 4));
+        if (offset + 8 + chunkSize > static_cast<quint32>(data.size())) {
+            break;
+        }
+        if (chunkName == QByteArrayLiteral("ANIM") && chunkSize >= 6) {
+            const quint16 playCount = qFromLittleEndian<quint16>(chunk + 4);
+            metadata.repetitions = playCount == 0 ? -1 : std::max(0, int(playCount) - 1);
+        } else if (chunkName == QByteArrayLiteral("ANMF") && chunkSize >= 16) {
+            metadata.frameDelays.append(std::max(1, int(littleEndian24(chunk + 12))));
+        }
+        offset += 8 + chunkSize + (chunkSize & 1U);
+    }
+    return metadata;
+}
+
+AnimationMetadata animationMetadata(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    const QByteArray data = file.readAll();
+    if (data.startsWith("GIF8")) {
+        return gifAnimationMetadata(data);
+    }
+    if (data.startsWith("RIFF") && data.mid(8, 4) == QByteArrayLiteral("WEBP")) {
+        return webpAnimationMetadata(data);
+    }
+    return {};
+}
 
 class ViewerWindow final : public QWidget
 {
@@ -81,6 +166,11 @@ public:
         boundaryTimer_ = new QTimer(this);
         boundaryTimer_->setSingleShot(true);
         QObject::connect(boundaryTimer_, &QTimer::timeout, boundaryMessage_, &QWidget::hide);
+        animationTimer_ = new QTimer(this);
+        animationTimer_->setSingleShot(true);
+        QObject::connect(animationTimer_, &QTimer::timeout, this, [this] {
+            advanceAnimation();
+        });
 
         emptyState_ = new QLabel(tr(EmptyStateText));
         emptyState_->setAlignment(Qt::AlignCenter);
@@ -126,6 +216,10 @@ protected:
         }
         if (event->key() == Qt::Key_Right) {
             navigate(1);
+            return;
+        }
+        if (event->key() == Qt::Key_Space) {
+            toggleAnimation();
             return;
         }
         QWidget::keyPressEvent(event);
@@ -270,26 +364,72 @@ private:
         requestedPath_ = sequence_.at(index);
         if (cache_.contains(requestedPath_)) {
             touch(requestedPath_);
-            present(requestedPath_, cache_.value(requestedPath_).image);
+            present(requestedPath_, cache_.value(requestedPath_).decoded);
             prefetchNeighbors();
             return;
         }
         decode(requestedPath_);
     }
 
-    void present(const QString &path, const QImage &image)
+    void present(const QString &path, const DecodedImage &decoded)
     {
-        if (image.isNull() || requestedPath_ != path) {
+        if (decoded.isNull() || requestedPath_ != path) {
             return;
         }
-        image_ = image;
-        imageLabel_->setPixmap(QPixmap::fromImage(image_));
-        imageLabel_->setMinimumSize(image_.size());
+        animationTimer_->stop();
+        currentImage_ = decoded;
+        currentFrame_ = 0;
+        completedLoops_ = 0;
+        animationPaused_ = false;
+        pausedDelayMilliseconds_ = 0;
+        showFrame(currentFrame_);
+        if (currentImage_.frames.size() > 1) {
+            animationTimer_->start(currentImage_.frameDelays.at(currentFrame_));
+        }
         emptyState_->hide();
         viewport_->show();
         setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
         boundaryTimer_->stop();
         boundaryMessage_->hide();
+    }
+
+    void showFrame(const int index)
+    {
+        image_ = currentImage_.frames.at(index);
+        imageLabel_->setPixmap(QPixmap::fromImage(image_));
+        imageLabel_->setMinimumSize(image_.size());
+    }
+
+    void advanceAnimation()
+    {
+        if (currentImage_.frames.size() < 2 || animationPaused_) {
+            return;
+        }
+        if (currentFrame_ + 1 < currentImage_.frames.size()) {
+            ++currentFrame_;
+        } else if (currentImage_.loopCount < 0 || completedLoops_ < currentImage_.loopCount) {
+            currentFrame_ = 0;
+            ++completedLoops_;
+        } else {
+            return;
+        }
+        showFrame(currentFrame_);
+        animationTimer_->start(currentImage_.frameDelays.at(currentFrame_));
+    }
+
+    void toggleAnimation()
+    {
+        if (currentImage_.frames.size() < 2) {
+            return;
+        }
+        if (animationPaused_) {
+            animationPaused_ = false;
+            animationTimer_->start(std::max(1, pausedDelayMilliseconds_));
+        } else {
+            pausedDelayMilliseconds_ = std::max(1, animationTimer_->remainingTime());
+            animationPaused_ = true;
+            animationTimer_->stop();
+        }
     }
 
     void decode(const QString &path)
@@ -310,14 +450,14 @@ private:
                              const DecodedImage decoded = watcher->result();
                              watcher->deleteLater();
                              decodesInFlight_.remove(decoded.path);
-                             if (!decoded.image.isNull()) {
-                                 insertCache(decoded.path, decoded.image);
+                             if (!decoded.isNull()) {
+                                 insertCache(decoded.path, decoded);
                              }
                              if (requestedPath_ == decoded.path) {
-                                 if (decoded.image.isNull()) {
+                                 if (decoded.isNull()) {
                                      showEmptyState();
                                  } else {
-                                     present(decoded.path, decoded.image);
+                                     present(decoded.path, decoded);
                                      prefetchNeighbors();
                                  }
                              }
@@ -330,13 +470,28 @@ private:
 #endif
             QImageReader reader(path);
             reader.setAutoTransform(true);
-            return DecodedImage{path, reader.read()};
+            DecodedImage decoded;
+            decoded.path = path;
+            const AnimationMetadata metadata = animationMetadata(path);
+            decoded.loopCount = metadata.repetitions;
+            while (reader.canRead()) {
+                const QImage frame = reader.read();
+                if (frame.isNull()) {
+                    break;
+                }
+                decoded.frames.append(frame);
+                const qsizetype frameIndex = decoded.frames.size() - 1;
+                decoded.frameDelays.append(frameIndex < metadata.frameDelays.size()
+                                               ? metadata.frameDelays.at(frameIndex)
+                                               : 100);
+            }
+            return decoded;
         }));
     }
 
     struct CacheEntry
     {
-        QImage image;
+        DecodedImage decoded;
         quint64 lastUse = 0;
     };
 
@@ -345,16 +500,16 @@ private:
         cache_[path].lastUse = ++accessCounter_;
     }
 
-    void insertCache(const QString &path, const QImage &image)
+    void insertCache(const QString &path, const DecodedImage &decoded)
     {
-        const qsizetype bytes = image.sizeInBytes();
+        const qsizetype bytes = decoded.sizeInBytes();
         if (bytes > cacheBudgetBytes_) {
             return;
         }
         if (cache_.contains(path)) {
-            cachedBytes_ -= cache_.value(path).image.sizeInBytes();
+            cachedBytes_ -= cache_.value(path).decoded.sizeInBytes();
         }
-        cache_.insert(path, CacheEntry{image, ++accessCounter_});
+        cache_.insert(path, CacheEntry{decoded, ++accessCounter_});
         cachedBytes_ += bytes;
         while (cachedBytes_ > cacheBudgetBytes_ && !cache_.isEmpty()) {
             QString oldestPath;
@@ -368,7 +523,7 @@ private:
             if (oldestPath.isEmpty()) {
                 break;
             }
-            cachedBytes_ -= cache_.value(oldestPath).image.sizeInBytes();
+            cachedBytes_ -= cache_.value(oldestPath).decoded.sizeInBytes();
             cache_.remove(oldestPath);
         }
     }
@@ -412,10 +567,16 @@ private:
     QScrollArea *viewport_ = nullptr;
     QLabel *boundaryMessage_ = nullptr;
     QTimer *boundaryTimer_ = nullptr;
+    QTimer *animationTimer_ = nullptr;
     QLabel *emptyState_ = nullptr;
     QStringList sequence_;
     int currentIndex_ = -1;
     QString requestedPath_;
+    DecodedImage currentImage_;
+    int currentFrame_ = 0;
+    int completedLoops_ = 0;
+    int pausedDelayMilliseconds_ = 0;
+    bool animationPaused_ = false;
     QHash<QString, CacheEntry> cache_;
     QSet<QString> decodesInFlight_;
     qsizetype cachedBytes_ = 0;
@@ -500,8 +661,10 @@ int main(int argc, char *argv[])
                 delete mimeData;
             } else if (!input.startsWith("Capture")) {
                 const bool ctrlO = input.startsWith("CtrlO");
-                const int qtKey = ctrlO ? Qt::Key_O
-                                        : input.startsWith("Left") ? Qt::Key_Left : Qt::Key_Right;
+                const int qtKey = ctrlO                         ? Qt::Key_O
+                                  : input.startsWith("Left")    ? Qt::Key_Left
+                                  : input.startsWith("Space")   ? Qt::Key_Space
+                                                                : Qt::Key_Right;
                 QKeyEvent event(QEvent::KeyPress, qtKey,
                                 ctrlO ? Qt::ControlModifier : Qt::NoModifier);
                 QWidget *target = QApplication::focusWidget();

@@ -12,8 +12,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Open a JPEG or PNG by passing its path, or launch without a path for the empty
-state:
+Open a JPEG, PNG, WebP, GIF, or BMP by passing its path, or launch without a
+path for the empty state:
 
 ```sh
 ./build/flick photo.jpg
@@ -40,6 +40,11 @@ state, and runtime directories.
 Image files are decoded on worker threads. Flick prefetches the previous and
 next images in the current sequence and keeps decoded images in an automatically
 evicted cache with an approximately 512 MB default budget.
+
+Animated GIF and WebP files play with their authored frame timing and loop
+behavior. Press `Space` to pause on the current frame and press it again to
+resume. Photographs with EXIF orientation metadata are presented upright
+automatically.
 
 ## License
 

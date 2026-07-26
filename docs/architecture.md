@@ -16,8 +16,10 @@ flowchart TB
         Sequence[Последовательность путей<br/>sequence_ и currentIndex_]
         Workers[QtConcurrent workers]
         Reader[QImageReader]
+        Metadata[GIF/WebP timing metadata]
         Cache[Decoded image cache<br/>512 MB byte budget]
-        Image[QImage<br/>декодированные пиксели]
+        Image[QImage frames<br/>декодированные пиксели]
+        Animation[Animation timer<br/>frame delays and loops]
         Pixmap[QPixmap]
         Label[QLabel]
         Viewport[QScrollArea]
@@ -29,8 +31,11 @@ flowchart TB
         Input --> Sequence
         Sequence --> Workers
         Workers --> Reader
+        Workers --> Metadata
         Reader --> Image
         Image --> Cache
+        Cache --> Animation
+        Animation --> Pixmap
         Cache --> Pixmap
         Pixmap --> Label
         Label --> Viewport
@@ -97,6 +102,14 @@ GUI-поток принимает только готовый `QImage`, свер
 запрошенным элементом и поэтому игнорирует устаревшие результаты. Предыдущий и
 следующий элементы предзагружаются. Декодированные изображения хранятся в кеше
 с LRU-вытеснением и бюджетом около 512 МБ.
+
+Для GIF и WebP рабочий поток декодирует все кадры и читает из контейнера
+длительности кадров и число повторов. GUI-поток переключает уже декодированные
+кадры одноразовым `QTimer`, поэтому задержки и конечное либо бесконечное
+зацикливание сохраняются. `Space` останавливает таймер с оставшейся задержкой и
+запускает его снова; для статического изображения команда ничего не меняет.
+`QImageReader::setAutoTransform(true)` применяет EXIF-ориентацию ко всем
+декодированным кадрам.
 
 ## Навигация по изображениям
 

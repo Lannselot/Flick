@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QImage>
 #include <QProcess>
+#include <QRect>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -31,6 +32,11 @@ private slots:
     void cancelledPickerAndUnsupportedDropRemainStable();
     void decodingRemainsResponsiveAndStaleResultsAreIgnored();
     void prefetchedImagesAreReusedAndCacheIsBounded();
+    void rendersSupportedStaticFormatsAndTransparency();
+    void appliesExifOrientation();
+    void animatedGifPreservesTimingAndFiniteLoop();
+    void animatedWebpPreservesTimingAndLoops();
+    void spacePausesAndResumesAnimationButDoesNotAffectStaticImages();
 
 private:
     struct RunningFlick
@@ -60,6 +66,7 @@ private:
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
                               const QColor &color, QSize size = QSize(32, 24));
     static bool containsColor(const QImage &image, const QColor &color, int tolerance = 0);
+    static QRect colorBounds(const QImage &image, const QColor &color, int tolerance = 0);
 
     QString executable_;
     QTemporaryDir fixtures_;
@@ -219,6 +226,23 @@ bool FlickApplicationTest::containsColor(const QImage &image, const QColor &colo
         }
     }
     return false;
+}
+
+QRect FlickApplicationTest::colorBounds(const QImage &image, const QColor &color,
+                                        const int tolerance)
+{
+    QRect bounds;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            if (qAbs(pixel.red() - color.red()) <= tolerance &&
+                qAbs(pixel.green() - color.green()) <= tolerance &&
+                qAbs(pixel.blue() - color.blue()) <= tolerance) {
+                bounds = bounds.united(QRect(x, y, 1, 1));
+            }
+        }
+    }
+    return bounds;
 }
 
 void FlickApplicationTest::displaysPngInTopLevelWindow()
@@ -471,6 +495,102 @@ void FlickApplicationTest::prefetchedImagesAreReusedAndCacheIsBounded()
                 .toInt() > 1);
     QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("CacheBytes")).toLongLong() <=
             CacheBudgetBytes);
+}
+
+void FlickApplicationTest::rendersSupportedStaticFormatsAndTransparency()
+{
+    const QList<QPair<QString, QColor>> fixtures = {
+        {QStringLiteral("static.jpg"), QColor(220, 20, 60)},
+        {QStringLiteral("static.png"), QColor(220, 20, 60)},
+        {QStringLiteral("static.webp"), QColor(50, 205, 50)},
+        {QStringLiteral("static.gif"), QColor(65, 105, 225)},
+        {QStringLiteral("static.bmp"), QColor(255, 140, 0)},
+    };
+    for (const auto &[name, color] : fixtures) {
+        const QString path = writeFixture(name + QStringLiteral(".base64"), name);
+        QVERIFY2(!path.isEmpty(), qPrintable(name));
+        RunningFlick flick;
+        start(flick, {path});
+        QVERIFY2(containsColor(waitForScreenshot(flick), color, 3), qPrintable(name));
+    }
+
+    const QString transparentPath =
+        writeFixture(QStringLiteral("transparent.png.base64"), QStringLiteral("transparent.png"));
+    QVERIFY(!transparentPath.isEmpty());
+    RunningFlick transparent;
+    start(transparent, {transparentPath});
+    const QImage screenshot = waitForScreenshot(transparent);
+    const QRect purple = colorBounds(screenshot, QColor(138, 43, 226));
+    QCOMPARE(purple.size(), QSize(4, 6));
+    QCOMPARE(screenshot.pixelColor(purple.right() + 1, purple.top()),
+             screenshot.pixelColor(purple.left() - 1, purple.top()));
+}
+
+void FlickApplicationTest::appliesExifOrientation()
+{
+    const QString path =
+        writeFixture(QStringLiteral("oriented.jpg.base64"), QStringLiteral("oriented.jpg"));
+    QVERIFY(!path.isEmpty());
+    RunningFlick flick;
+    start(flick, {path});
+    const QRect red = colorBounds(waitForScreenshot(flick), QColor(220, 20, 60), 12);
+    QVERIFY(!red.isEmpty());
+    QVERIFY2(red.height() > red.width(), "EXIF orientation 6 was not applied");
+}
+
+void FlickApplicationTest::animatedGifPreservesTimingAndFiniteLoop()
+{
+    const QString path =
+        writeFixture(QStringLiteral("animated.gif.base64"), QStringLiteral("animated.gif"));
+    QVERIFY(!path.isEmpty());
+    RunningFlick flick;
+    start(flick, {path});
+    QVERIFY(containsColor(waitForScreenshot(flick), QColor(220, 20, 60), 3));
+    QVERIFY(containsColor(captureAfter(flick, 170), QColor(50, 205, 50), 3));
+    QVERIFY(containsColor(captureAfter(flick, 900), QColor(50, 205, 50)));
+}
+
+void FlickApplicationTest::animatedWebpPreservesTimingAndLoops()
+{
+    const QString path =
+        writeFixture(QStringLiteral("animated.webp.base64"), QStringLiteral("animated.webp"));
+    QVERIFY(!path.isEmpty());
+    RunningFlick flick;
+    start(flick, {path});
+    QVERIFY(containsColor(waitForScreenshot(flick), QColor(220, 20, 60), 5));
+    QVERIFY(containsColor(captureAfter(flick, 170), QColor(50, 205, 50), 3));
+    QVERIFY(containsColor(captureAfter(flick, 230), QColor(220, 20, 60), 5));
+}
+
+void FlickApplicationTest::spacePausesAndResumesAnimationButDoesNotAffectStaticImages()
+{
+    const QString animatedPath =
+        writeFixture(QStringLiteral("animated.webp.base64"), QStringLiteral("pausable.webp"));
+    QVERIFY(!animatedPath.isEmpty());
+    RunningFlick animated;
+    start(animated, {animatedPath});
+    waitForScreenshot(animated);
+    QVERIFY(containsColor(captureAfter(animated, 170), QColor(50, 205, 50), 3));
+    const QImage paused =
+        sendCommandAndWaitForScreenshot(animated, QByteArrayLiteral("Space"));
+    QCOMPARE(captureAfter(animated, 500), paused);
+    sendCommandAndWaitForScreenshot(animated, QByteArrayLiteral("Space"));
+    bool resumedToRed = false;
+    QElapsedTimer resumeTimer;
+    resumeTimer.start();
+    while (!resumedToRed && resumeTimer.elapsed() < 500) {
+        resumedToRed =
+            containsColor(captureAfter(animated, 20), QColor(220, 20, 60), 5);
+    }
+    QVERIFY2(resumedToRed, "Animation did not resume from its paused frame");
+
+    const QString staticPath =
+        writeFixture(QStringLiteral("static.png.base64"), QStringLiteral("still.png"));
+    QVERIFY(!staticPath.isEmpty());
+    RunningFlick still;
+    start(still, {staticPath});
+    const QImage before = waitForScreenshot(still);
+    QCOMPARE(sendCommandAndWaitForScreenshot(still, QByteArrayLiteral("Space")), before);
 }
 
 QTEST_MAIN(FlickApplicationTest)
