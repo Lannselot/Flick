@@ -8,6 +8,7 @@
 #include <QRect>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QtEndian>
 
 namespace {
 const QColor PngFixtureColor(100, 149, 237);
@@ -34,6 +35,9 @@ private slots:
     void cancelledPickerAndUnsupportedDropRemainStable();
     void decodingRemainsResponsiveAndStaleResultsAreIgnored();
     void prefetchedImagesAreReusedAndCacheIsBounded();
+    void decodeFailureExplainsTheProblemAndKeepsNavigationUsable();
+    void technicalDetailsExpandAndF5RecoversAfterRepair();
+    void extremeDimensionsRequireConfirmationBeforeBackgroundDecode();
     void rendersSupportedStaticFormatsAndTransparency();
     void appliesExifOrientation();
     void animatedGifPreservesTimingAndFiniteLoop();
@@ -71,7 +75,8 @@ private:
 
     void start(RunningFlick &flick, const QStringList &arguments = {},
                const QString &pickerSelection = {}, int decodeDelayMilliseconds = 0,
-               int cacheBudgetBytes = 0, const QString &configHome = {});
+               int cacheBudgetBytes = 0, const QString &configHome = {},
+               qint64 largeAllocationLimitBytes = 0);
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
     void sendCommand(RunningFlick &flick, const QByteArray &command);
@@ -117,7 +122,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
                                  const QString &pickerSelection,
                                  const int decodeDelayMilliseconds,
                                  const int cacheBudgetBytes,
-                                 const QString &configHome)
+                                 const QString &configHome,
+                                 const qint64 largeAllocationLimitBytes)
 {
     QVERIFY(flick.environment.isValid());
     const QString config = configHome.isEmpty()
@@ -152,6 +158,10 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     if (cacheBudgetBytes > 0) {
         environment.insert(QStringLiteral("FLICK_TEST_CACHE_BUDGET_BYTES"),
                            QString::number(cacheBudgetBytes));
+    }
+    if (largeAllocationLimitBytes > 0) {
+        environment.insert(QStringLiteral("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES"),
+                           QString::number(largeAllocationLimitBytes));
     }
     flick.process.setProcessEnvironment(environment);
     flick.process.start(executable_, arguments);
@@ -604,6 +614,151 @@ void FlickApplicationTest::prefetchedImagesAreReusedAndCacheIsBounded()
                 .toInt() > 1);
     QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("CacheBytes")).toLongLong() <=
             CacheBudgetBytes);
+}
+
+void FlickApplicationTest::decodeFailureExplainsTheProblemAndKeepsNavigationUsable()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString malformedPath = directory.filePath(QStringLiteral("image1.png"));
+    QFile malformed(malformedPath);
+    QVERIFY(malformed.open(QIODevice::WriteOnly));
+    QCOMPARE(malformed.write("not a png"), 9);
+    malformed.close();
+    const QString deniedPath =
+        writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::yellow));
+    QVERIFY(!deniedPath.isEmpty());
+    QVERIFY(QFile::setPermissions(deniedPath, {}));
+    const QColor recoverableColor(46, 139, 87);
+    const QString adjacentPath =
+        writeImage(directory, QStringLiteral("image3.png"), recoverableColor);
+    QVERIFY(!adjacentPath.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {malformedPath});
+    waitForScreenshot(flick);
+    const QList<QByteArray> error =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ErrorState")).split('|');
+    QCOMPARE(error.at(0), QByteArrayLiteral("visible"));
+    QVERIFY(error.at(1).contains("could not be displayed"));
+    QVERIFY(!error.at(2).isEmpty());
+
+    pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    const QList<QByteArray> denied =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ErrorState")).split('|');
+    QCOMPARE(denied.at(0), QByteArrayLiteral("visible"));
+    QVERIFY(!denied.at(2).isEmpty());
+
+    const QImage adjacent = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(adjacent, recoverableColor));
+    QVERIFY(flick.process.state() == QProcess::Running);
+    QVERIFY(QFile::setPermissions(deniedPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+}
+
+void FlickApplicationTest::technicalDetailsExpandAndF5RecoversAfterRepair()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor recoveredColor(255, 127, 80);
+    const QString path =
+        writeImage(directory, QStringLiteral("truncated.png"), recoveredColor, QSize(80, 60));
+    QVERIFY(!path.isEmpty());
+    QFile fixture(path);
+    QVERIFY(fixture.open(QIODevice::ReadOnly));
+    const QByteArray validBytes = fixture.readAll();
+    fixture.close();
+    QVERIFY(fixture.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(fixture.write(validBytes.first(24)), 24);
+    fixture.close();
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ErrorState")).split('|').at(3),
+             QByteArrayLiteral("details-hidden"));
+    sendCommand(flick, QByteArrayLiteral("ToggleDetails"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ErrorState")).split('|').at(3),
+             QByteArrayLiteral("details-visible"));
+
+    QVERIFY(fixture.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(fixture.write(validBytes), validBytes.size());
+    fixture.close();
+    const QImage recovered =
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Refresh"));
+    QVERIFY(containsColor(recovered, recoveredColor));
+    QCOMPARE(sendQueryAndWaitForReply(flick,
+                                      QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
+             QByteArrayLiteral("2"));
+}
+
+void FlickApplicationTest::extremeDimensionsRequireConfirmationBeforeBackgroundDecode()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QByteArray bmp(54, '\0');
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    qToLittleEndian<quint32>(54, bmp.data() + 10);
+    qToLittleEndian<quint32>(40, bmp.data() + 14);
+    qToLittleEndian<qint32>(20000, bmp.data() + 18);
+    qToLittleEndian<qint32>(10000, bmp.data() + 22);
+    qToLittleEndian<quint16>(1, bmp.data() + 26);
+    qToLittleEndian<quint16>(24, bmp.data() + 28);
+    const QString path = directory.filePath(QStringLiteral("extreme.bmp"));
+    QFile fixture(path);
+    QVERIFY(fixture.open(QIODevice::WriteOnly));
+    QCOMPARE(fixture.write(bmp), bmp.size());
+    fixture.close();
+
+    RunningFlick rejected;
+    start(rejected, {path});
+    waitForScreenshot(rejected);
+    QList<QByteArray> warning =
+        sendQueryAndWaitForReply(rejected, QByteArrayLiteral("LargeImageState")).split('|');
+    QCOMPARE(warning.at(0), QByteArrayLiteral("visible"));
+    QCOMPARE(warning.at(1), QByteArrayLiteral("20000x10000"));
+    sendCommandAndWaitForScreenshot(rejected, QByteArrayLiteral("RejectLarge"));
+    QCOMPARE(sendQueryAndWaitForReply(rejected,
+                                      QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
+             QByteArrayLiteral("1"));
+
+    RunningFlick approved;
+    start(approved, {path}, {}, 700);
+    waitForScreenshot(approved);
+    QElapsedTimer responsiveness;
+    responsiveness.start();
+    sendCommand(approved, QByteArrayLiteral("ApproveLarge"));
+    sendCommandAndWaitForScreenshot(approved, QByteArrayLiteral("Capture"));
+    QVERIFY2(responsiveness.elapsed() < 500, "approved large-image decode blocked the UI thread");
+    QTRY_COMPARE_WITH_TIMEOUT(
+        sendQueryAndWaitForReply(approved, QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
+        QByteArrayLiteral("2"), 5000);
+
+    const QString animatedPath =
+        writeFixture(QStringLiteral("animated.gif.base64"), QStringLiteral("allocation.gif"));
+    QVERIFY(!animatedPath.isEmpty());
+    RunningFlick allocationGuard;
+    start(allocationGuard, {animatedPath}, {}, 0, 0, {}, 1);
+    waitForScreenshot(allocationGuard);
+    QCOMPARE(sendQueryAndWaitForReply(allocationGuard,
+                                      QByteArrayLiteral("LargeImageState")).split('|').at(0),
+             QByteArrayLiteral("visible"));
+
+    const QString adjacentPath =
+        writeImage(directory, QStringLiteral("ordinary.png"), QColor(Qt::cyan));
+    QVERIFY(!adjacentPath.isEmpty());
+    RunningFlick staleConfirmation;
+    start(staleConfirmation, {path});
+    waitForScreenshot(staleConfirmation);
+    sendCommandAndWaitForScreenshot(staleConfirmation, QByteArrayLiteral("Drop:") +
+                                                           adjacentPath.toUtf8());
+    QCOMPARE(sendQueryAndWaitForReply(staleConfirmation,
+                                      QByteArrayLiteral("LargeImageState")).split('|').at(0),
+             QByteArrayLiteral("hidden"));
+    sendCommand(staleConfirmation, QByteArrayLiteral("ApproveLarge"));
+    QCOMPARE(sendQueryAndWaitForReply(staleConfirmation,
+                                      QByteArrayLiteral("DecodeCount:") + adjacentPath.toUtf8()),
+             QByteArrayLiteral("1"));
 }
 
 void FlickApplicationTest::rendersSupportedStaticFormatsAndTransparency()

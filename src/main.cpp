@@ -29,12 +29,14 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <QToolButton>
 #include <QTransform>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -60,6 +62,8 @@ namespace {
 constexpr auto EmptyStateText = "No image open";
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 constexpr int StatusVisibilityMilliseconds = 2000;
+constexpr qint64 LargeImagePixelLimit = 100'000'000;
+constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
 
 enum class WheelAction
 {
@@ -70,6 +74,10 @@ enum class WheelAction
 struct DecodedImage
 {
     QString path;
+    QString errorDetails;
+    QSize declaredSize;
+    qint64 estimatedAllocationBytes = 0;
+    bool confirmationRequired = false;
     QList<QImage> frames;
     QList<int> frameDelays;
     int loopCount = 0;
@@ -370,8 +378,57 @@ public:
         emptyState_->setAlignment(Qt::AlignCenter);
         emptyState_->setAccessibleName(tr(EmptyStateText));
 
+        errorState_ = new QWidget;
+        auto *errorLayout = new QVBoxLayout(errorState_);
+        errorLayout->setAlignment(Qt::AlignCenter);
+        errorExplanation_ = new QLabel;
+        errorExplanation_->setAlignment(Qt::AlignCenter);
+        errorExplanation_->setWordWrap(true);
+        errorExplanation_->setAccessibleName(tr("Image error"));
+        errorDetailsButton_ = new QToolButton;
+        errorDetailsButton_->setText(tr("Technical details"));
+        errorDetailsButton_->setCheckable(true);
+        errorDetails_ = new QLabel;
+        errorDetails_->setAlignment(Qt::AlignCenter);
+        errorDetails_->setWordWrap(true);
+        errorDetails_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        errorDetails_->hide();
+        QObject::connect(errorDetailsButton_, &QToolButton::toggled, errorDetails_,
+                         &QWidget::setVisible);
+        errorLayout->addWidget(errorExplanation_);
+        errorLayout->addWidget(errorDetailsButton_, 0, Qt::AlignHCenter);
+        errorLayout->addWidget(errorDetails_);
+        errorState_->hide();
+
+        largeImageWarning_ = new QWidget;
+        auto *warningLayout = new QVBoxLayout(largeImageWarning_);
+        warningLayout->setAlignment(Qt::AlignCenter);
+        largeImageExplanation_ = new QLabel;
+        largeImageExplanation_->setAlignment(Qt::AlignCenter);
+        largeImageExplanation_->setWordWrap(true);
+        largeImageExplanation_->setAccessibleName(tr("Large image warning"));
+        auto *warningButtons = new QWidget;
+        auto *warningButtonLayout = new QHBoxLayout(warningButtons);
+        auto *approveLarge = new QPushButton(tr("Decode anyway"));
+        approveLarge->setObjectName(QStringLiteral("approveLargeImage"));
+        auto *rejectLarge = new QPushButton(tr("Cancel"));
+        rejectLarge->setObjectName(QStringLiteral("rejectLargeImage"));
+        warningButtonLayout->addWidget(approveLarge);
+        warningButtonLayout->addWidget(rejectLarge);
+        QObject::connect(approveLarge, &QPushButton::clicked, this, [this] {
+            approveLargeImage();
+        });
+        QObject::connect(rejectLarge, &QPushButton::clicked, this, [this] {
+            rejectLargeImage();
+        });
+        warningLayout->addWidget(largeImageExplanation_);
+        warningLayout->addWidget(warningButtons, 0, Qt::AlignHCenter);
+        largeImageWarning_->hide();
+
         layout->addWidget(viewport_);
         layout->addWidget(emptyState_);
+        layout->addWidget(errorState_);
+        layout->addWidget(largeImageWarning_);
         layout->addWidget(boundaryMessage_);
         showEmptyState();
 
@@ -424,6 +481,20 @@ public:
     QByteArray feedbackState() const
     {
         return boundaryMessage_->text().toUtf8();
+    }
+
+    QByteArray errorState() const
+    {
+        return QByteArray(errorState_->isVisible() ? "visible" : "hidden") + '|' +
+               errorExplanation_->text().toUtf8() + '|' + errorDetails_->text().toUtf8() + '|' +
+               (errorDetails_->isVisible() ? "details-visible" : "details-hidden");
+    }
+
+    QByteArray largeImageState() const
+    {
+        return QByteArray(largeImageWarning_->isVisible() ? "visible" : "hidden") + '|' +
+               QByteArray::number(pendingLargeImageSize_.width()) + 'x' +
+               QByteArray::number(pendingLargeImageSize_.height());
     }
 
     QByteArray revealedPath() const
@@ -516,6 +587,10 @@ protected:
     {
         if (event->key() == Qt::Key_F11) {
             toggleFullscreen();
+            return;
+        }
+        if (event->key() == Qt::Key_F5) {
+            retryCurrentImage();
             return;
         }
         if (event->key() == Qt::Key_Escape && isFullScreen()) {
@@ -928,6 +1003,7 @@ private:
 
     void displayImage(const int index)
     {
+        dismissLargeImageWarning();
         rotationQuarterTurns_ = 0;
         currentIndex_ = index;
         requestedPath_ = sequence_.at(index);
@@ -941,6 +1017,46 @@ private:
             return;
         }
         decode(requestedPath_);
+    }
+
+    void retryCurrentImage()
+    {
+        if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
+            return;
+        }
+        if (cache_.contains(requestedPath_)) {
+            cachedBytes_ -= cache_.value(requestedPath_).decoded.sizeInBytes();
+            cache_.remove(requestedPath_);
+        }
+        errorState_->hide();
+        dismissLargeImageWarning();
+        decode(requestedPath_);
+    }
+
+    void approveLargeImage()
+    {
+        const QString approvedPath = pendingLargeImagePath_;
+        dismissLargeImageWarning();
+        if (!approvedPath.isEmpty() && requestedPath_ == approvedPath) {
+            decode(approvedPath, true);
+        }
+    }
+
+    void rejectLargeImage()
+    {
+        const bool rejectingCurrent =
+            !pendingLargeImagePath_.isEmpty() && requestedPath_ == pendingLargeImagePath_;
+        dismissLargeImageWarning();
+        if (rejectingCurrent) {
+            showEmptyState();
+            showFeedback(tr("Large image decode cancelled"));
+        }
+    }
+
+    void dismissLargeImageWarning()
+    {
+        largeImageWarning_->hide();
+        pendingLargeImagePath_.clear();
     }
 
     void present(const QString &path, const DecodedImage &decoded)
@@ -963,6 +1079,8 @@ private:
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
         emptyState_->hide();
+        errorState_->hide();
+        largeImageWarning_->hide();
         viewport_->show();
         for (QAction *action : imageActions_) {
             action->setEnabled(true);
@@ -1178,7 +1296,7 @@ private:
         }
     }
 
-    void decode(const QString &path)
+    void decode(const QString &path, const bool approvedLargeImage = false)
     {
         if (path.isEmpty() || cache_.contains(path) || decodesInFlight_.contains(path)) {
             return;
@@ -1187,8 +1305,14 @@ private:
 #ifdef FLICK_ENABLE_TEST_HARNESS
         ++decodeCounts_[path];
         const int delayMilliseconds = qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
+        const qint64 configuredAllocationLimit =
+            qEnvironmentVariableIntValue("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES");
+        const qint64 allocationLimit = configuredAllocationLimit > 0
+                                           ? configuredAllocationLimit
+                                           : LargeImageAllocationLimit;
 #else
         constexpr int delayMilliseconds = 0;
+        constexpr qint64 allocationLimit = LargeImageAllocationLimit;
 #endif
         auto *watcher = new QFutureWatcher<DecodedImage>(this);
         QObject::connect(watcher, &QFutureWatcher<DecodedImage>::finished, this,
@@ -1196,19 +1320,26 @@ private:
                              const DecodedImage decoded = watcher->result();
                              watcher->deleteLater();
                              decodesInFlight_.remove(decoded.path);
+                             if (decoded.confirmationRequired) {
+                                 if (requestedPath_ == decoded.path) {
+                                     showLargeImageWarning(decoded);
+                                 }
+                                 return;
+                             }
                              if (!decoded.isNull()) {
                                  insertCache(decoded.path, decoded);
                              }
                              if (requestedPath_ == decoded.path) {
                                  if (decoded.isNull()) {
-                                     showEmptyState();
+                                     showDecodeError(decoded);
                                  } else {
                                      present(decoded.path, decoded);
                                      prefetchNeighbors();
                                  }
                              }
                          });
-        watcher->setFuture(QtConcurrent::run([path, delayMilliseconds] {
+        watcher->setFuture(
+            QtConcurrent::run([path, delayMilliseconds, approvedLargeImage, allocationLimit] {
 #ifdef FLICK_ENABLE_TEST_HARNESS
             if (delayMilliseconds > 0) {
                 QThread::msleep(static_cast<unsigned long>(delayMilliseconds));
@@ -1218,6 +1349,27 @@ private:
             reader.setAutoTransform(true);
             DecodedImage decoded;
             decoded.path = path;
+            decoded.declaredSize = reader.size();
+            if (decoded.declaredSize.isValid()) {
+                const qint64 pixels = qint64(decoded.declaredSize.width()) *
+                                      qint64(decoded.declaredSize.height());
+                const qint64 bytesPerFrame =
+                    pixels > std::numeric_limits<qint64>::max() / 4
+                        ? std::numeric_limits<qint64>::max()
+                        : pixels * 4;
+                const qint64 frameCount = std::max(1, reader.imageCount());
+                decoded.estimatedAllocationBytes =
+                    bytesPerFrame > std::numeric_limits<qint64>::max() / frameCount
+                        ? std::numeric_limits<qint64>::max()
+                        : bytesPerFrame * frameCount;
+                decoded.confirmationRequired =
+                    !approvedLargeImage &&
+                    (pixels > LargeImagePixelLimit ||
+                     decoded.estimatedAllocationBytes > allocationLimit);
+                if (decoded.confirmationRequired) {
+                    return decoded;
+                }
+            }
             const AnimationMetadata metadata = animationMetadata(path);
             decoded.loopCount = metadata.repetitions;
             while (reader.canRead()) {
@@ -1231,8 +1383,14 @@ private:
                                                ? metadata.frameDelays.at(frameIndex)
                                                : 100);
             }
+            if (decoded.isNull()) {
+                decoded.errorDetails = reader.errorString();
+                if (decoded.errorDetails.isEmpty()) {
+                    decoded.errorDetails = QStringLiteral("The image decoder returned no pixels.");
+                }
+            }
             return decoded;
-        }));
+            }));
     }
 
     struct CacheEntry
@@ -1305,7 +1463,40 @@ private:
     void showEmptyState()
     {
         viewport_->hide();
+        errorState_->hide();
+        largeImageWarning_->hide();
         emptyState_->show();
+    }
+
+    void showDecodeError(const DecodedImage &decoded)
+    {
+        animationTimer_->stop();
+        viewport_->hide();
+        emptyState_->hide();
+        errorExplanation_->setText(
+            tr("%1 could not be displayed. You can retry or browse to another image.")
+                .arg(QFileInfo(decoded.path).fileName()));
+        errorDetails_->setText(decoded.errorDetails);
+        errorDetailsButton_->setChecked(false);
+        errorState_->show();
+        setWindowTitle(tr("Flick — Error"));
+    }
+
+    void showLargeImageWarning(const DecodedImage &decoded)
+    {
+        pendingLargeImageSize_ = decoded.declaredSize;
+        pendingLargeImagePath_ = decoded.path;
+        viewport_->hide();
+        emptyState_->hide();
+        errorState_->hide();
+        largeImageExplanation_->setText(
+            tr("%1 declares %2 × %3 pixels and may require about %4 MB when decoded. "
+               "Decode it anyway?")
+                .arg(QFileInfo(decoded.path).fileName())
+                .arg(decoded.declaredSize.width())
+                .arg(decoded.declaredSize.height())
+                .arg(decoded.estimatedAllocationBytes / (1024 * 1024)));
+        largeImageWarning_->show();
     }
 
     QImage image_;
@@ -1316,6 +1507,14 @@ private:
     QTimer *animationTimer_ = nullptr;
     QFileSystemWatcher *directoryWatcher_ = nullptr;
     QLabel *emptyState_ = nullptr;
+    QWidget *errorState_ = nullptr;
+    QLabel *errorExplanation_ = nullptr;
+    QLabel *errorDetails_ = nullptr;
+    QToolButton *errorDetailsButton_ = nullptr;
+    QWidget *largeImageWarning_ = nullptr;
+    QLabel *largeImageExplanation_ = nullptr;
+    QSize pendingLargeImageSize_;
+    QString pendingLargeImagePath_;
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
     QStringList sequence_;
@@ -1431,6 +1630,22 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.feedbackState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("ErrorState")) {
+                fprintf(stdout, "%s\n", window.errorState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("LargeImageState")) {
+                fprintf(stdout, "%s\n", window.largeImageState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ToggleDetails")) {
+                if (auto *button = window.findChild<QToolButton *>()) {
+                    button->toggle();
+                }
+            } else if (input.startsWith("ApproveLarge")) {
+                window.findChild<QPushButton *>(QStringLiteral("approveLargeImage"))->click();
+            } else if (input.startsWith("RejectLarge")) {
+                window.findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))->click();
             } else if (input.startsWith("FailExternalActions")) {
                 window.failExternalActionsForTest();
                 return;
@@ -1535,6 +1750,7 @@ int main(int argc, char *argv[])
                                   : input.startsWith("RotateLeft") ? Qt::Key_L
                                   : input.startsWith("RotateRight") ? Qt::Key_R
                                   : input.startsWith("F11")     ? Qt::Key_F11
+                                  : input.startsWith("Refresh") ? Qt::Key_F5
                                   : input.startsWith("Escape")  ? Qt::Key_Escape
                                   : input.startsWith("Left")    ? Qt::Key_Left
                                   : input.startsWith("Space")   ? Qt::Key_Space

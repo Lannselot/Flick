@@ -4,11 +4,11 @@
 
 **Blocked by:** 04 — Asynchronous decoding and bounded prefetch cache; 05 — Supported formats, animation, and orientation.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Decode and access failures produce an in-window error while adjacent navigation remains usable.
-- [ ] Optional technical details can be expanded without replacing the user-facing explanation.
-- [ ] F5 retries the current file and can recover after a transient failure is resolved.
-- [ ] Declared dimensions above 100 megapixels or estimated decoded allocation above 1 GB require explicit confirmation before decode.
-- [ ] Rejecting the warning avoids the excessive allocation; approving it still decodes away from the UI thread.
-- [ ] Tests cover malformed, truncated, permission-denied, extreme-dimension, and recoverable fixtures.
+- [x] Decode and access failures produce an in-window error while adjacent navigation remains usable.
+- [x] Optional technical details can be expanded without replacing the user-facing explanation.
+- [x] F5 retries the current file and can recover after a transient failure is resolved.
+- [x] Declared dimensions above 100 megapixels or estimated decoded allocation above 1 GB require explicit confirmation before decode.
+- [x] Rejecting the warning avoids the excessive allocation; approving it still decodes away from the UI thread.
+- [x] Tests cover malformed, truncated, permission-denied, extreme-dimension, and recoverable fixtures.

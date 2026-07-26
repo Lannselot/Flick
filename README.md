@@ -46,6 +46,12 @@ behavior. Press `Space` to pause on the current frame and press it again to
 resume. Photographs with EXIF orientation metadata are presented upright
 automatically.
 
+If an image cannot be read, Flick keeps the browsing sequence available and
+shows an in-window explanation with optional technical details. Press `F5` to
+retry the current file. Images declaring more than 100 megapixels or an
+estimated decoded allocation over 1 GB require confirmation before Flick starts
+decoding them.
+
 Large images initially fit inside the window, while smaller images open at
 100%. Press `1` for 100%, `F` to fit the image, or `Ctrl++` and `Ctrl+-` to
 zoom in and out. The mouse wheel browses the image sequence by default, while
