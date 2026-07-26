@@ -477,6 +477,16 @@ protected:
             openFromFilePicker();
             return;
         }
+        if (event->modifiers().testFlag(Qt::ControlModifier) &&
+            (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal)) {
+            setZoomCentered(zoom_ * 1.25);
+            return;
+        }
+        if (event->modifiers().testFlag(Qt::ControlModifier) &&
+            event->key() == Qt::Key_Minus) {
+            setZoomCentered(zoom_ / 1.25);
+            return;
+        }
         if (event->key() == Qt::Key_1) {
             setZoomCentered(1.0);
             return;
@@ -1410,11 +1420,15 @@ int main(int argc, char *argv[])
                 const bool copyImage = input.startsWith("CopyImage");
                 const bool copyPath = input.startsWith("CopyPath");
                 const bool reveal = input.startsWith("Reveal");
+                const bool ctrlPlus = input.startsWith("CtrlPlus");
+                const bool ctrlMinus = input.startsWith("CtrlMinus");
                 const bool shift = input.startsWith("Shift");
                 const int qtKey = ctrlO                         ? Qt::Key_O
                                   : copyImage                   ? Qt::Key_C
                                   : copyPath                    ? Qt::Key_C
                                   : reveal                      ? Qt::Key_R
+                                  : ctrlPlus                    ? Qt::Key_Plus
+                                  : ctrlMinus                   ? Qt::Key_Minus
                                   : input.startsWith("Information") ? Qt::Key_I
                                   : input.startsWith("Fit")     ? Qt::Key_F
                                   : input.startsWith("ActualSize") ? Qt::Key_1
@@ -1430,7 +1444,8 @@ int main(int argc, char *argv[])
                                   : input.startsWith("Space")   ? Qt::Key_Space
                                                                 : Qt::Key_Right;
                 QKeyEvent event(QEvent::KeyPress, qtKey,
-                                (ctrlO || copyImage) ? Qt::ControlModifier
+                                (ctrlO || copyImage || ctrlPlus || ctrlMinus)
+                                    ? Qt::ControlModifier
                                 : (copyPath || reveal)
                                     ? Qt::ControlModifier | Qt::ShiftModifier
                                 : shift ? Qt::ShiftModifier

@@ -47,14 +47,20 @@ resume. Photographs with EXIF orientation metadata are presented upright
 automatically.
 
 Large images initially fit inside the window, while smaller images open at
-100%. Press `1` for 100% or `F` to fit the image. The mouse wheel browses the
-image sequence by default, while `Ctrl` plus the wheel zooms around the pointer.
+100%. Press `1` for 100%, `F` to fit the image, or `Ctrl++` and `Ctrl+-` to
+zoom in and out. The mouse wheel browses the image sequence by default, while
+`Ctrl` plus the wheel zooms around the pointer.
 The viewport context menu can swap those primary and alternate wheel actions.
 Drag with the left mouse button to pan, or pan with `Shift` plus an arrow key.
 Plain left and right arrows continue to browse the image sequence at any zoom
 level. Press `L` or `R` to rotate only the current view left or right by 90
 degrees. This temporary rotation is discarded when another image is selected
 and never changes the source file.
+
+Press `F11` or double-click the image to toggle fullscreen mode. Press `Esc` to
+return to the normal window. In fullscreen, the status display and mouse
+pointer hide after a short period of inactivity and reappear when the mouse
+moves.
 
 Press `I` to inspect the current file's path, format, dimensions, size,
 modification time, zoom, and sequence position. `Ctrl+C` copies the rendered

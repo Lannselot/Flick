@@ -659,6 +659,18 @@ void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
     const QImage smallActual =
         sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("ActualSize"));
     QCOMPARE(colorBounds(smallActual, color).size(), QSize(120, 80));
+    sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("CtrlPlus"));
+    QCOMPARE(sendQueryAndWaitForReply(smallFlick, QByteArrayLiteral("ViewState"))
+                 .split(',')
+                 .first()
+                 .toDouble(),
+             1.25);
+    sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("CtrlMinus"));
+    QCOMPARE(sendQueryAndWaitForReply(smallFlick, QByteArrayLiteral("ViewState"))
+                 .split(',')
+                 .first()
+                 .toDouble(),
+             1.0);
 
     RunningFlick largeFlick;
     start(largeFlick, {large});
