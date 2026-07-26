@@ -240,7 +240,10 @@ public:
         layout->setContentsMargins(0, 0, 0, 0);
 
         imageLabel_ = new QLabel;
+        imageLabel_->setObjectName(QStringLiteral("imageLabel"));
         imageLabel_->setAlignment(Qt::AlignCenter);
+        imageLabel_->setMouseTracking(true);
+        imageLabel_->installEventFilter(this);
 
         viewport_ = new QScrollArea;
         viewport_->setAlignment(Qt::AlignCenter);
@@ -364,10 +367,12 @@ protected:
         if (watched == viewport_->viewport() && event->type() == QEvent::Resize) {
             positionStatusDisplay();
         }
-        if (watched == viewport_->viewport() && event->type() == QEvent::MouseMove) {
+        if ((watched == viewport_->viewport() || watched == imageLabel_) &&
+            event->type() == QEvent::MouseMove) {
             showStatus(true);
         }
-        if (watched == viewport_->viewport() && event->type() == QEvent::MouseButtonDblClick) {
+        if ((watched == viewport_->viewport() || watched == imageLabel_) &&
+            event->type() == QEvent::MouseButtonDblClick) {
             toggleFullscreen();
             return true;
         }
@@ -1135,7 +1140,8 @@ int main(int argc, char *argv[])
             } else if (input.startsWith("ContextMenu:")) {
                 const QList<QByteArray> parts = input.trimmed().split(':');
                 if (parts.size() == 3) {
-                    QWidget *target = window.findChild<QScrollArea *>()->viewport();
+                    QWidget *target =
+                        window.findChild<QLabel *>(QStringLiteral("imageLabel"));
                     const QPoint position(parts.at(1).toInt(), parts.at(2).toInt());
                     QContextMenuEvent event(QContextMenuEvent::Mouse, position,
                                             target->mapToGlobal(position));

@@ -76,6 +76,7 @@ private:
     QString writeFixture(const QString &encodedName, const QString &imageName);
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
                               const QColor &color, QSize size = QSize(32, 24));
+    static QStringList writeStatusSequence(const QTemporaryDir &directory);
     static bool containsColor(const QImage &image, const QColor &color, int tolerance = 0);
     static QRect colorBounds(const QImage &image, const QColor &color, int tolerance = 0);
 
@@ -240,6 +241,13 @@ QString FlickApplicationTest::writeImage(const QTemporaryDir &directory, const Q
     image.fill(color);
     const QString path = directory.filePath(name);
     return image.save(path, "PNG") ? path : QString{};
+}
+
+QStringList FlickApplicationTest::writeStatusSequence(const QTemporaryDir &directory)
+{
+    return {writeImage(directory, QStringLiteral("image1.png"), QColor(Qt::red), QSize(120, 80)),
+            writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::green),
+                       QSize(120, 80))};
 }
 
 bool FlickApplicationTest::containsColor(const QImage &image, const QColor &color,
@@ -896,15 +904,11 @@ void FlickApplicationTest::transientStatusReportsViewContextAndReappearsOnMouseM
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    const QString first =
-        writeImage(directory, QStringLiteral("image1.png"), QColor(Qt::red), QSize(120, 80));
-    const QString second =
-        writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::green), QSize(120, 80));
-    QVERIFY(!first.isEmpty());
-    QVERIFY(!second.isEmpty());
+    const QStringList sequence = writeStatusSequence(directory);
+    QVERIFY(!sequence.contains(QString{}));
 
     RunningFlick flick;
-    start(flick, {first});
+    start(flick, {sequence.first()});
     waitForScreenshot(flick);
     QList<QByteArray> state =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
@@ -930,15 +934,11 @@ void FlickApplicationTest::fullscreenInactivityHidesStatusAndPointerWithoutBlock
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    const QString first =
-        writeImage(directory, QStringLiteral("image1.png"), QColor(Qt::red), QSize(120, 80));
-    const QString second =
-        writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::green), QSize(120, 80));
-    QVERIFY(!first.isEmpty());
-    QVERIFY(!second.isEmpty());
+    const QStringList sequence = writeStatusSequence(directory);
+    QVERIFY(!sequence.contains(QString{}));
 
     RunningFlick flick;
-    start(flick, {first});
+    start(flick, {sequence.first()});
     waitForScreenshot(flick);
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("F11"));
     QTest::qWait(2200);
