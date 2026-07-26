@@ -8,6 +8,8 @@
 #include <QContextMenuEvent>
 #include <QCursor>
 #include <QDateTime>
+#include <QDBusInterface>
+#include <QDBusReply>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFutureWatcher>
@@ -24,7 +26,6 @@
 #include <QLocale>
 #include <QMimeData>
 #include <QMouseEvent>
-#include <QProcess>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
@@ -464,24 +465,6 @@ protected:
 
     void keyPressEvent(QKeyEvent *event) override
     {
-        if (event->key() == Qt::Key_I && event->modifiers() == Qt::NoModifier) {
-            showInformation();
-            return;
-        }
-        if (event->matches(QKeySequence::Copy)) {
-            copyRenderedImage();
-            return;
-        }
-        if (event->key() == Qt::Key_C &&
-            event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
-            copyCurrentPath();
-            return;
-        }
-        if (event->key() == Qt::Key_R &&
-            event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
-            revealCurrentFile();
-            return;
-        }
         if (event->key() == Qt::Key_F11) {
             toggleFullscreen();
             return;
@@ -571,7 +554,7 @@ private:
             auto *action = new QAction(text, this);
             action->setObjectName(objectName);
             action->setShortcut(shortcut);
-            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            action->setShortcutContext(Qt::WindowShortcut);
             action->setEnabled(false);
             QObject::connect(action, &QAction::triggered, this, operation);
             viewport_->addAction(action);
@@ -591,7 +574,7 @@ private:
 
     QString imageInformation() const
     {
-        const QFileInfo file(requestedPath_);
+        const QFileInfo file(currentImage_.path);
         QString format = file.suffix().toUpper();
         if (format == QStringLiteral("JPG")) {
             format = QStringLiteral("JPEG");
@@ -604,7 +587,7 @@ private:
             .arg(file.size())
             .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
             .arg(qRound(zoom_ * 100))
-            .arg(currentIndex_ + 1)
+            .arg(sequence_.indexOf(currentImage_.path) + 1)
             .arg(sequence_.size());
     }
 
@@ -649,7 +632,11 @@ private:
             showFeedback(tr("Could not copy the current file path"));
             return;
         }
-        clipboard->setText(QFileInfo(requestedPath_).absoluteFilePath());
+        const QString path = QFileInfo(currentImage_.path).absoluteFilePath();
+        clipboard->setText(path);
+        if (clipboard->text() != path) {
+            showFeedback(tr("Could not copy the current file path"));
+        }
     }
 
     void copyRenderedImage()
@@ -662,7 +649,11 @@ private:
             showFeedback(tr("Could not copy the current image"));
             return;
         }
-        clipboard->setImage(rotatedImage());
+        const QImage content = rotatedImage();
+        clipboard->setImage(content);
+        if (clipboard->image() != content) {
+            showFeedback(tr("Could not copy the current image"));
+        }
     }
 
     void revealCurrentFile()
@@ -671,11 +662,18 @@ private:
             !externalActionCanRun(tr("Could not show the current file in the file manager"))) {
             return;
         }
-        const QFileInfo file(requestedPath_);
+        const QFileInfo file(currentImage_.path);
 #ifdef FLICK_ENABLE_TEST_HARNESS
         revealedPath_ = file.absoluteFilePath();
 #else
-        if (!QProcess::startDetached(QStringLiteral("xdg-open"), {file.absolutePath()})) {
+        QDBusInterface fileManager(QStringLiteral("org.freedesktop.FileManager1"),
+                                   QStringLiteral("/org/freedesktop/FileManager1"),
+                                   QStringLiteral("org.freedesktop.FileManager1"));
+        const QDBusReply<void> reply =
+            fileManager.call(QStringLiteral("ShowItems"),
+                             QStringList{QUrl::fromLocalFile(file.absoluteFilePath()).toString()},
+                             QString{});
+        if (!reply.isValid()) {
             showFeedback(tr("Could not show the current file in the file manager"));
         }
 #endif
@@ -865,6 +863,9 @@ private:
         rotationQuarterTurns_ = 0;
         currentIndex_ = index;
         requestedPath_ = sequence_.at(index);
+        for (QAction *action : imageActions_) {
+            action->setEnabled(false);
+        }
         if (cache_.contains(requestedPath_)) {
             touch(requestedPath_);
             present(requestedPath_, cache_.value(requestedPath_).decoded);

@@ -1015,6 +1015,24 @@ void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()
     QVERIFY(actions.contains("Copy Image [Ctrl+C]"));
     QVERIFY(actions.contains("Copy Path [Ctrl+Shift+C]"));
     QVERIFY(actions.contains("Show in File Manager [Ctrl+Shift+R]"));
+
+    QTemporaryDir incomingDirectory;
+    QVERIFY(incomingDirectory.isValid());
+    const QString incoming = writeImage(incomingDirectory, QStringLiteral("incoming.png"),
+                                        QColor(Qt::blue), QSize(16, 12));
+    QVERIFY(!incoming.isEmpty());
+    RunningFlick asynchronous;
+    start(asynchronous, {path}, {}, 250);
+    waitForScreenshot(asynchronous);
+    sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
+    sendCommand(asynchronous, QByteArrayLiteral("Drop:") + incoming.toUtf8());
+    sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
+    QCOMPARE(sendQueryAndWaitForReply(asynchronous, QByteArrayLiteral("ClipboardText")),
+             QFileInfo(path).canonicalFilePath().toUtf8());
+    captureAfter(asynchronous, 300);
+    sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
+    QCOMPARE(sendQueryAndWaitForReply(asynchronous, QByteArrayLiteral("ClipboardText")),
+             QFileInfo(incoming).canonicalFilePath().toUtf8());
 }
 
 void FlickApplicationTest::revealsCurrentFileAndReportsExternalActionFailures()
