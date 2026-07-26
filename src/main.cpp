@@ -3,9 +3,13 @@
 #include <QApplication>
 #include <QAction>
 #include <QActionGroup>
+#include <QClipboard>
 #include <QCollator>
 #include <QContextMenuEvent>
 #include <QCursor>
+#include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFutureWatcher>
 #include <QHash>
 #include <QDir>
@@ -20,6 +24,7 @@
 #include <QLocale>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QProcess>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
@@ -278,6 +283,7 @@ public:
         QObject::connect(zoomWithWheel, &QAction::triggered, this, [this] {
             setWheelAction(WheelAction::Zoom);
         });
+        addImageActions();
         setFocusPolicy(Qt::StrongFocus);
 
         boundaryMessage_ = new QLabel;
@@ -359,6 +365,40 @@ public:
                                                                            : "pointer-visible") +
                '|' + statusDisplay_->text().toUtf8();
     }
+
+    QByteArray informationState() const
+    {
+        return informationText_.toUtf8();
+    }
+
+    QByteArray feedbackState() const
+    {
+        return boundaryMessage_->text().toUtf8();
+    }
+
+    QByteArray revealedPath() const
+    {
+        return revealedPath_.toUtf8();
+    }
+
+    QByteArray contextActions() const
+    {
+        QStringList descriptions;
+        for (const QAction *action : viewport_->actions()) {
+            if (!action->objectName().startsWith(QStringLiteral("image"))) {
+                continue;
+            }
+            descriptions.append(action->text() + QStringLiteral(" [") +
+                                action->shortcut().toString(QKeySequence::NativeText) +
+                                QStringLiteral("]"));
+        }
+        return descriptions.join(QLatin1Char('|')).toUtf8();
+    }
+
+    void failExternalActionsForTest()
+    {
+        failExternalActionsForTest_ = true;
+    }
 #endif
 
 protected:
@@ -424,6 +464,24 @@ protected:
 
     void keyPressEvent(QKeyEvent *event) override
     {
+        if (event->key() == Qt::Key_I && event->modifiers() == Qt::NoModifier) {
+            showInformation();
+            return;
+        }
+        if (event->matches(QKeySequence::Copy)) {
+            copyRenderedImage();
+            return;
+        }
+        if (event->key() == Qt::Key_C &&
+            event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
+            copyCurrentPath();
+            return;
+        }
+        if (event->key() == Qt::Key_R &&
+            event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
+            revealCurrentFile();
+            return;
+        }
         if (event->key() == Qt::Key_F11) {
             toggleFullscreen();
             return;
@@ -506,6 +564,123 @@ protected:
     }
 
 private:
+    void addImageActions()
+    {
+        const auto addAction = [this](const QString &text, const QString &objectName,
+                                      const QKeySequence &shortcut, auto operation) {
+            auto *action = new QAction(text, this);
+            action->setObjectName(objectName);
+            action->setShortcut(shortcut);
+            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            action->setEnabled(false);
+            QObject::connect(action, &QAction::triggered, this, operation);
+            viewport_->addAction(action);
+            imageActions_.append(action);
+        };
+        addAction(tr("Information"), QStringLiteral("imageInformationAction"),
+                  QKeySequence(Qt::Key_I), [this] { showInformation(); });
+        addAction(tr("Copy Image"), QStringLiteral("imageCopyAction"), QKeySequence::Copy,
+                  [this] { copyRenderedImage(); });
+        addAction(tr("Copy Path"), QStringLiteral("imageCopyPathAction"),
+                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C),
+                  [this] { copyCurrentPath(); });
+        addAction(tr("Show in File Manager"), QStringLiteral("imageRevealAction"),
+                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
+                  [this] { revealCurrentFile(); });
+    }
+
+    QString imageInformation() const
+    {
+        const QFileInfo file(requestedPath_);
+        QString format = file.suffix().toUpper();
+        if (format == QStringLiteral("JPG")) {
+            format = QStringLiteral("JPEG");
+        }
+        return tr("Path: %1\nFormat: %2\nDimensions: %3 × %4\nSize: %5 bytes\n"
+                  "Modified: %6\nZoom: %7%\nPosition: %8 / %9")
+            .arg(file.absoluteFilePath(), format)
+            .arg(image_.width())
+            .arg(image_.height())
+            .arg(file.size())
+            .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
+            .arg(qRound(zoom_ * 100))
+            .arg(currentIndex_ + 1)
+            .arg(sequence_.size());
+    }
+
+    void showInformation()
+    {
+        if (currentIndex_ < 0 || image_.isNull()) {
+            return;
+        }
+        informationText_ = imageInformation();
+        auto *dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(tr("Image Information"));
+        auto *layout = new QVBoxLayout(dialog);
+        auto *facts = new QLabel(informationText_, dialog);
+        facts->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+        layout->addWidget(facts);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        layout->addWidget(buttons);
+        dialog->show();
+    }
+
+    bool externalActionCanRun(const QString &failureMessage)
+    {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        if (failExternalActionsForTest_) {
+            showFeedback(failureMessage);
+            return false;
+        }
+#endif
+        return true;
+    }
+
+    void copyCurrentPath()
+    {
+        if (currentIndex_ < 0 ||
+            !externalActionCanRun(tr("Could not copy the current file path"))) {
+            return;
+        }
+        QClipboard *clipboard = QApplication::clipboard();
+        if (clipboard == nullptr) {
+            showFeedback(tr("Could not copy the current file path"));
+            return;
+        }
+        clipboard->setText(QFileInfo(requestedPath_).absoluteFilePath());
+    }
+
+    void copyRenderedImage()
+    {
+        if (image_.isNull() || !externalActionCanRun(tr("Could not copy the current image"))) {
+            return;
+        }
+        QClipboard *clipboard = QApplication::clipboard();
+        if (clipboard == nullptr) {
+            showFeedback(tr("Could not copy the current image"));
+            return;
+        }
+        clipboard->setImage(rotatedImage());
+    }
+
+    void revealCurrentFile()
+    {
+        if (currentIndex_ < 0 ||
+            !externalActionCanRun(tr("Could not show the current file in the file manager"))) {
+            return;
+        }
+        const QFileInfo file(requestedPath_);
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        revealedPath_ = file.absoluteFilePath();
+#else
+        if (!QProcess::startDetached(QStringLiteral("xdg-open"), {file.absolutePath()})) {
+            showFeedback(tr("Could not show the current file in the file manager"));
+        }
+#endif
+    }
+
     void setWheelAction(const WheelAction action)
     {
         wheelAction_ = action;
@@ -720,6 +895,9 @@ private:
         }
         emptyState_->hide();
         viewport_->show();
+        for (QAction *action : imageActions_) {
+            action->setEnabled(true);
+        }
         setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
         boundaryTimer_->stop();
         boundaryMessage_->hide();
@@ -1052,8 +1230,12 @@ private:
     qsizetype cachedBytes_ = 0;
     qsizetype cacheBudgetBytes_ = DefaultCacheBudgetBytes;
     quint64 accessCounter_ = 0;
+    QList<QAction *> imageActions_;
+    QString informationText_;
 #ifdef FLICK_ENABLE_TEST_HARNESS
     QHash<QString, int> decodeCounts_;
+    QString revealedPath_;
+    bool failExternalActionsForTest_ = false;
 #endif
 };
 
@@ -1116,6 +1298,34 @@ int main(int argc, char *argv[])
             } else if (input.startsWith("UiState")) {
                 fprintf(stdout, "%s\n", window.uiState().constData());
                 fflush(stdout);
+                return;
+            } else if (input.startsWith("InformationState")) {
+                fprintf(stdout, "%s\n", window.informationState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ClipboardText")) {
+                fprintf(stdout, "%s\n", QApplication::clipboard()->text().toUtf8().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ClipboardImageSize")) {
+                const QSize size = QApplication::clipboard()->image().size();
+                fprintf(stdout, "%dx%d\n", size.width(), size.height());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ContextActions")) {
+                fprintf(stdout, "%s\n", window.contextActions().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("RevealedPath")) {
+                fprintf(stdout, "%s\n", window.revealedPath().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("Feedback")) {
+                fprintf(stdout, "%s\n", window.feedbackState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("FailExternalActions")) {
+                window.failExternalActionsForTest();
                 return;
             } else if (input.startsWith("DecodeCount:")) {
                 const QString path = QString::fromUtf8(input.mid(12).trimmed());
@@ -1196,8 +1406,15 @@ int main(int argc, char *argv[])
                 }
             } else if (!input.startsWith("Capture")) {
                 const bool ctrlO = input.startsWith("CtrlO");
+                const bool copyImage = input.startsWith("CopyImage");
+                const bool copyPath = input.startsWith("CopyPath");
+                const bool reveal = input.startsWith("Reveal");
                 const bool shift = input.startsWith("Shift");
                 const int qtKey = ctrlO                         ? Qt::Key_O
+                                  : copyImage                   ? Qt::Key_C
+                                  : copyPath                    ? Qt::Key_C
+                                  : reveal                      ? Qt::Key_R
+                                  : input.startsWith("Information") ? Qt::Key_I
                                   : input.startsWith("Fit")     ? Qt::Key_F
                                   : input.startsWith("ActualSize") ? Qt::Key_1
                                   : input.startsWith("ShiftLeft") ? Qt::Key_Left
@@ -1212,7 +1429,9 @@ int main(int argc, char *argv[])
                                   : input.startsWith("Space")   ? Qt::Key_Space
                                                                 : Qt::Key_Right;
                 QKeyEvent event(QEvent::KeyPress, qtKey,
-                                ctrlO    ? Qt::ControlModifier
+                                (ctrlO || copyImage) ? Qt::ControlModifier
+                                : (copyPath || reveal)
+                                    ? Qt::ControlModifier | Qt::ShiftModifier
                                 : shift ? Qt::ShiftModifier
                                         : Qt::NoModifier);
                 QWidget *target = QApplication::focusWidget();

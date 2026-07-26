@@ -56,6 +56,12 @@ level. Press `L` or `R` to rotate only the current view left or right by 90
 degrees. This temporary rotation is discarded when another image is selected
 and never changes the source file.
 
+Press `I` to inspect the current file's path, format, dimensions, size,
+modification time, zoom, and sequence position. `Ctrl+C` copies the rendered
+image, `Ctrl+Shift+C` copies its path, and `Ctrl+Shift+R` shows the file's
+directory in the system file manager. These commands and their shortcuts are
+also available from the viewport context menu.
+
 ## License
 
 Copyright (C) 2026 Flick contributors

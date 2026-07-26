@@ -46,6 +46,9 @@ private slots:
     void togglesFullscreenFromKeyboardAndPointer();
     void transientStatusReportsViewContextAndReappearsOnMouseMovement();
     void fullscreenInactivityHidesStatusAndPointerWithoutBlockingKeyboard();
+    void informationShowsEssentialFacts();
+    void copiesPathAndRenderedImageAndExposesContextCommands();
+    void revealsCurrentFileAndReportsExternalActionFailures();
 
 private:
     struct RunningFlick
@@ -958,6 +961,90 @@ void FlickApplicationTest::fullscreenInactivityHidesStatusAndPointerWithoutBlock
     state = sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|');
     QCOMPARE(state.at(1), QByteArrayLiteral("status-visible"));
     QCOMPARE(state.at(2), QByteArrayLiteral("pointer-visible"));
+}
+
+void FlickApplicationTest::informationShowsEssentialFacts()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString first =
+        writeImage(directory, QStringLiteral("facts.png"), QColor(Qt::cyan), QSize(32, 24));
+    const QString second =
+        writeImage(directory, QStringLiteral("next.png"), QColor(Qt::magenta), QSize(16, 12));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    waitForScreenshot(flick);
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Information"));
+    const QByteArray information =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"));
+    QVERIFY(information.contains(QFileInfo(first).canonicalFilePath().toUtf8()));
+    QVERIFY(information.contains("PNG"));
+    QVERIFY(information.contains("32 × 24"));
+    QVERIFY(information.contains(QByteArray::number(QFileInfo(first).size())));
+    QVERIFY(information.contains("Modified"));
+    QVERIFY(information.contains("100%"));
+    QVERIFY(information.contains("1 / 2"));
+}
+
+void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path =
+        writeImage(directory, QStringLiteral("clipboard.png"), QColor(Qt::yellow), QSize(32, 24));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    sendCommand(flick, QByteArrayLiteral("CopyPath"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ClipboardText")),
+             QFileInfo(path).canonicalFilePath().toUtf8());
+
+    sendCommand(flick, QByteArrayLiteral("RotateRight"));
+    sendCommand(flick, QByteArrayLiteral("CopyImage"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ClipboardImageSize")),
+             QByteArrayLiteral("24x32"));
+
+    const QByteArray actions =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ContextActions"));
+    QVERIFY(actions.contains("Information [I]"));
+    QVERIFY(actions.contains("Copy Image [Ctrl+C]"));
+    QVERIFY(actions.contains("Copy Path [Ctrl+Shift+C]"));
+    QVERIFY(actions.contains("Show in File Manager [Ctrl+Shift+R]"));
+}
+
+void FlickApplicationTest::revealsCurrentFileAndReportsExternalActionFailures()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path =
+        writeImage(directory, QStringLiteral("reveal.png"), QColor(Qt::green), QSize(32, 24));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    sendCommand(flick, QByteArrayLiteral("Reveal"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("RevealedPath")),
+             QFileInfo(path).canonicalFilePath().toUtf8());
+
+    RunningFlick failing;
+    failing.process.setProcessEnvironment(QProcessEnvironment());
+    start(failing, {path});
+    waitForScreenshot(failing);
+    sendCommand(failing, QByteArrayLiteral("FailExternalActions"));
+    sendCommand(failing, QByteArrayLiteral("CopyPath"));
+    QVERIFY(sendQueryAndWaitForReply(failing, QByteArrayLiteral("Feedback"))
+                .contains("Could not copy"));
+    QVERIFY(failing.process.state() == QProcess::Running);
+    sendCommand(failing, QByteArrayLiteral("Reveal"));
+    QVERIFY(sendQueryAndWaitForReply(failing, QByteArrayLiteral("Feedback"))
+                .contains("Could not show"));
+    QVERIFY(failing.process.state() == QProcess::Running);
 }
 
 QTEST_MAIN(FlickApplicationTest)

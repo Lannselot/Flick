@@ -6,9 +6,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] `I` opens information showing full path, format, dimensions, byte size, modification time, zoom, and sequence position.
-- [ ] The current file path can be copied to the system clipboard.
-- [ ] The currently rendered image content can be copied to the system clipboard.
-- [ ] The current file can be revealed in the system file manager.
-- [ ] A context menu exposes the available commands and their shortcuts.
-- [ ] Failures in clipboard or file-manager integration are reported without terminating Flick.
+- [x] `I` opens information showing full path, format, dimensions, byte size, modification time, zoom, and sequence position.
+- [x] The current file path can be copied to the system clipboard.
+- [x] The currently rendered image content can be copied to the system clipboard.
+- [x] The current file can be revealed in the system file manager.
+- [x] A context menu exposes the available commands and their shortcuts.
+- [x] Failures in clipboard or file-manager integration are reported without terminating Flick.
