@@ -49,6 +49,7 @@ private slots:
     void pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndResetView();
     void wheelActionDefaultsToNavigationWithCtrlZoom();
     void wheelActionCanSwitchToZoomWithCtrlNavigation();
+    void settingsApplyImmediatelyAndPersistAcrossLaunches();
     void temporarilyRotatesCurrentViewAndResetsOnNavigation();
     void togglesFullscreenFromKeyboardAndPointer();
     void transientStatusReportsViewContextAndReappearsOnMouseMovement();
@@ -406,6 +407,13 @@ void FlickApplicationTest::opensSelectedImageWithCtrlO()
     waitForScreenshot(flick);
     const QImage opened = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlO"));
     QVERIFY(containsColor(opened, selectedColor));
+
+    QFile settingsFile(
+        flick.environment.filePath(QStringLiteral("config/Flick/Flick.conf")));
+    QVERIFY(settingsFile.open(QIODevice::ReadOnly));
+    const QByteArray persistedSettings = settingsFile.readAll();
+    QVERIFY(persistedSettings.contains("lastDirectory="));
+    QVERIFY(persistedSettings.contains(directory.path().toUtf8()));
 }
 
 void FlickApplicationTest::singleImageDropBrowsesContainingDirectory()
@@ -1086,6 +1094,30 @@ void FlickApplicationTest::wheelActionCanSwitchToZoomWithCtrlNavigation()
     const QList<QByteArray> persistedAfter =
         sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("ViewState")).split(',');
     QVERIFY(persistedAfter.at(0).toDouble() > persistedBefore.at(0).toDouble());
+}
+
+void FlickApplicationTest::settingsApplyImmediatelyAndPersistAcrossLaunches()
+{
+    const QString first =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("settings.png"));
+    QTemporaryDir sharedConfiguration;
+    QVERIFY(sharedConfiguration.isValid());
+    const QString configHome = sharedConfiguration.filePath(QStringLiteral("config"));
+
+    RunningFlick configured;
+    start(configured, {first}, {}, 0, 0, configHome);
+    waitForScreenshot(configured);
+    sendCommand(configured, QByteArrayLiteral("ApplySettings:zoom:#123456:0:16:1"));
+    QCOMPARE(sendQueryAndWaitForReply(configured, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("zoom|#123456|hidden|16777216|restore"));
+    configured.process.terminate();
+    QVERIFY(configured.process.waitForFinished(2000));
+
+    RunningFlick relaunched;
+    start(relaunched, {first}, {}, 0, 0, configHome);
+    waitForScreenshot(relaunched);
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("zoom|#123456|hidden|16777216|restore"));
 }
 
 void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()

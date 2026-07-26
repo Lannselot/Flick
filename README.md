@@ -68,6 +68,12 @@ return to the normal window. In fullscreen, the status display and mouse
 pointer hide after a short period of inactivity and reappear when the mouse
 moves.
 
+Press `Ctrl+,` or choose Settings from the viewport context menu to configure
+the wheel action, viewport background, transient status display, decoded-image
+cache budget, and optional window geometry restoration. Changes take effect
+immediately and are saved in the standard XDG configuration location. The open
+dialog also returns to the last directory from which an image was selected.
+
 Press `I` to inspect the current file's path, format, dimensions, size,
 modification time, zoom, and sequence position. `Ctrl+C` copies the rendered
 image, `Ctrl+Shift+C` copies its path, and `Ctrl+Shift+R` shows the file's
