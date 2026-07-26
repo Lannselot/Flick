@@ -851,7 +851,6 @@ private:
             return;
         }
         const QString canonicalPath = QFileInfo(path).canonicalFilePath();
-        directoryBacked_ = true;
         const QString directoryPath = QFileInfo(canonicalPath).absolutePath();
         directoryWatcher_->removePaths(directoryWatcher_->directories());
         directoryWatcher_->addPath(directoryPath);
@@ -866,7 +865,6 @@ private:
 
     void openExplicitList(const QStringList &paths)
     {
-        directoryBacked_ = false;
         directoryWatcher_->removePaths(directoryWatcher_->directories());
         sequence_.clear();
         for (const QString &path : paths) {
@@ -981,7 +979,7 @@ private:
 
     void refreshDirectorySequence()
     {
-        if (!directoryBacked_ || directoryWatcher_->directories().isEmpty()) {
+        if (directoryWatcher_->directories().isEmpty()) {
             return;
         }
         const int previousIndex = currentIndex_;
@@ -1324,7 +1322,6 @@ private:
     int currentIndex_ = -1;
     QString requestedPath_;
     QString pendingFeedback_;
-    bool directoryBacked_ = false;
     DecodedImage currentImage_;
     int currentFrame_ = 0;
     int completedLoops_ = 0;
