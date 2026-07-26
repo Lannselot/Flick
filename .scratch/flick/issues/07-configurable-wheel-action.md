@@ -6,8 +6,8 @@
 
 **Status:** ready-for-agent
 
-- [ ] The default wheel action navigates the image sequence.
-- [ ] The user can switch the primary wheel action between navigation and zoom.
-- [ ] Holding Ctrl performs the alternate wheel action in either configuration.
-- [ ] Wheel zoom follows the same cursor-centered behavior as other pointer zoom input.
-- [ ] Application-level tests cover both configurations and their Ctrl-modified alternatives.
+- [x] The default wheel action navigates the image sequence.
+- [x] The user can switch the primary wheel action between navigation and zoom.
+- [x] Holding Ctrl performs the alternate wheel action in either configuration.
+- [x] Wheel zoom follows the same cursor-centered behavior as other pointer zoom input.
+- [x] Application-level tests cover both configurations and their Ctrl-modified alternatives.

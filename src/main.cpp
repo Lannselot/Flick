@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QApplication>
+#include <QAction>
+#include <QActionGroup>
 #include <QCollator>
+#include <QContextMenuEvent>
 #include <QFutureWatcher>
 #include <QHash>
 #include <QDir>
@@ -45,6 +48,12 @@
 namespace {
 constexpr auto EmptyStateText = "No image open";
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
+
+enum class WheelAction
+{
+    Navigate,
+    Zoom
+};
 
 struct DecodedImage
 {
@@ -238,6 +247,30 @@ public:
         viewport_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         viewport_->setWidget(imageLabel_);
         viewport_->viewport()->installEventFilter(this);
+        viewport_->setContextMenuPolicy(Qt::ActionsContextMenu);
+        auto *wheelActionGroup = new QActionGroup(this);
+        wheelActionGroup->setExclusive(true);
+        auto *navigateWithWheel = new QAction(tr("Wheel navigates images"), wheelActionGroup);
+        navigateWithWheel->setObjectName(QStringLiteral("wheelNavigateAction"));
+        navigateWithWheel->setCheckable(true);
+        auto *zoomWithWheel = new QAction(tr("Wheel zooms image"), wheelActionGroup);
+        zoomWithWheel->setObjectName(QStringLiteral("wheelZoomAction"));
+        zoomWithWheel->setCheckable(true);
+        viewport_->addAction(navigateWithWheel);
+        viewport_->addAction(zoomWithWheel);
+        const QString storedWheelAction =
+            QSettings().value(QStringLiteral("view/wheelAction"), QStringLiteral("navigate"))
+                .toString();
+        wheelAction_ =
+            storedWheelAction == QStringLiteral("zoom") ? WheelAction::Zoom : WheelAction::Navigate;
+        navigateWithWheel->setChecked(wheelAction_ == WheelAction::Navigate);
+        zoomWithWheel->setChecked(wheelAction_ == WheelAction::Zoom);
+        QObject::connect(navigateWithWheel, &QAction::triggered, this, [this] {
+            setWheelAction(WheelAction::Navigate);
+        });
+        QObject::connect(zoomWithWheel, &QAction::triggered, this, [this] {
+            setWheelAction(WheelAction::Zoom);
+        });
         setFocusPolicy(Qt::StrongFocus);
 
         boundaryMessage_ = new QLabel;
@@ -300,10 +333,16 @@ protected:
     {
         if (watched == viewport_->viewport() && event->type() == QEvent::Wheel) {
             const auto *wheel = static_cast<QWheelEvent *>(event);
-            const int zoomDelta = wheel->angleDelta().y() != 0
-                                      ? wheel->angleDelta().y()
-                                      : wheel->pixelDelta().y() * 8;
-            zoomAt(wheel->position(), zoomDelta);
+            const int wheelDelta = wheel->angleDelta().y() != 0
+                                       ? wheel->angleDelta().y()
+                                       : wheel->pixelDelta().y() * 8;
+            const bool alternate = wheel->modifiers().testFlag(Qt::ControlModifier);
+            const bool zoom = (wheelAction_ == WheelAction::Zoom) != alternate;
+            if (zoom) {
+                zoomAt(wheel->position(), wheelDelta);
+            } else if (wheelDelta != 0) {
+                navigate(wheelDelta > 0 ? -1 : 1);
+            }
             return true;
         }
         if (watched == viewport_->viewport() && event->type() == QEvent::MouseButtonPress) {
@@ -406,6 +445,14 @@ protected:
     }
 
 private:
+    void setWheelAction(const WheelAction action)
+    {
+        wheelAction_ = action;
+        QSettings().setValue(QStringLiteral("view/wheelAction"),
+                             action == WheelAction::Zoom ? QStringLiteral("zoom")
+                                                         : QStringLiteral("navigate"));
+    }
+
     static bool isSupportedImage(const QString &path)
     {
         static const QStringList supportedSuffixes = {QStringLiteral("jpg"), QStringLiteral("jpeg"),
@@ -841,6 +888,7 @@ private:
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
     bool animationPaused_ = false;
+    WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;
     bool dragging_ = false;
     QPointF lastDragPosition_;
@@ -930,12 +978,30 @@ int main(int argc, char *argv[])
                                  Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(&window, &event);
                 delete mimeData;
-            } else if (input.startsWith("Wheel:")) {
+            } else if (input.startsWith("ContextMenu:")) {
+                const QList<QByteArray> parts = input.trimmed().split(':');
+                if (parts.size() == 3) {
+                    QWidget *target = window.findChild<QScrollArea *>()->viewport();
+                    const QPoint position(parts.at(1).toInt(), parts.at(2).toInt());
+                    QContextMenuEvent event(QContextMenuEvent::Mouse, position,
+                                            target->mapToGlobal(position));
+                    QApplication::sendEvent(target, &event);
+                }
+            } else if (input.startsWith("MenuDown") || input.startsWith("MenuEnter")) {
+                if (QWidget *menu = QApplication::activePopupWidget()) {
+                    const int key =
+                        input.startsWith("MenuDown") ? Qt::Key_Down : Qt::Key_Return;
+                    QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+                    QApplication::sendEvent(menu, &event);
+                }
+            } else if (input.startsWith("Wheel:") || input.startsWith("CtrlWheel:")) {
                 const QList<QByteArray> parts = input.trimmed().split(':');
                 if (parts.size() == 4) {
                     const QPointF position(parts.at(1).toInt(), parts.at(2).toInt());
+                    const Qt::KeyboardModifiers modifiers =
+                        input.startsWith("CtrlWheel:") ? Qt::ControlModifier : Qt::NoModifier;
                     QWheelEvent event(position, position, QPoint(), QPoint(0, parts.at(3).toInt()),
-                                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                                      Qt::NoButton, modifiers, Qt::NoScrollPhase, false);
                     QApplication::sendEvent(window.findChild<QScrollArea *>()->viewport(), &event);
                 }
             } else if (input.startsWith("Drag:")) {

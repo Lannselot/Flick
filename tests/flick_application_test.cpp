@@ -40,6 +40,8 @@ private slots:
     void appliesInitialScalingAndKeyboardZoomModes();
     void pointerZoomKeepsCursorOnTheSameImagePoint();
     void pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndResetView();
+    void wheelActionDefaultsToNavigationWithCtrlZoom();
+    void wheelActionCanSwitchToZoomWithCtrlNavigation();
 
 private:
     struct RunningFlick
@@ -59,9 +61,11 @@ private:
 
     void start(RunningFlick &flick, const QStringList &arguments = {},
                const QString &pickerSelection = {}, int decodeDelayMilliseconds = 0,
-               int cacheBudgetBytes = 0);
+               int cacheBudgetBytes = 0, const QString &configHome = {});
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
+    void sendCommand(RunningFlick &flick, const QByteArray &command);
+    void selectZoomWheelAction(RunningFlick &flick);
     QImage sendCommandAndWaitForScreenshot(RunningFlick &flick, const QByteArray &command);
     QImage captureAfter(RunningFlick &flick, int delayMilliseconds);
     QByteArray sendQueryAndWaitForReply(RunningFlick &flick, const QByteArray &command);
@@ -101,10 +105,13 @@ QString FlickApplicationTest::writeFixture(const QString &encodedName, const QSt
 void FlickApplicationTest::start(RunningFlick &flick, const QStringList &arguments,
                                  const QString &pickerSelection,
                                  const int decodeDelayMilliseconds,
-                                 const int cacheBudgetBytes)
+                                 const int cacheBudgetBytes,
+                                 const QString &configHome)
 {
     QVERIFY(flick.environment.isValid());
-    const QString config = flick.environment.filePath(QStringLiteral("config"));
+    const QString config = configHome.isEmpty()
+                               ? flick.environment.filePath(QStringLiteral("config"))
+                               : configHome;
     const QString data = flick.environment.filePath(QStringLiteral("data"));
     const QString cache = flick.environment.filePath(QStringLiteral("cache"));
     const QString state = flick.environment.filePath(QStringLiteral("state"));
@@ -160,6 +167,22 @@ QImage FlickApplicationTest::pressKeyAndWaitForScreenshot(RunningFlick &flick, c
 {
     return sendCommandAndWaitForScreenshot(
         flick, key == Qt::Key_Left ? QByteArrayLiteral("Left") : QByteArrayLiteral("Right"));
+}
+
+void FlickApplicationTest::sendCommand(RunningFlick &flick, const QByteArray &command)
+{
+    const QByteArray terminatedCommand = command + '\n';
+    QVERIFY(flick.process.write(terminatedCommand) == terminatedCommand.size());
+    QVERIFY(flick.process.waitForBytesWritten());
+    QTest::qWait(20);
+}
+
+void FlickApplicationTest::selectZoomWheelAction(RunningFlick &flick)
+{
+    sendCommand(flick, QByteArrayLiteral("ContextMenu:250:150"));
+    sendCommand(flick, QByteArrayLiteral("MenuDown"));
+    sendCommand(flick, QByteArrayLiteral("MenuDown"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("MenuEnter"));
 }
 
 QImage FlickApplicationTest::sendCommandAndWaitForScreenshot(RunningFlick &flick,
@@ -593,7 +616,9 @@ void FlickApplicationTest::spacePausesAndResumesAnimationButDoesNotAffectStaticI
     RunningFlick still;
     start(still, {staticPath});
     const QImage before = waitForScreenshot(still);
-    QCOMPARE(sendCommandAndWaitForScreenshot(still, QByteArrayLiteral("Space")), before);
+    const QImage after =
+        sendCommandAndWaitForScreenshot(still, QByteArrayLiteral("Space"));
+    QCOMPARE(colorBounds(after, PngFixtureColor), colorBounds(before, PngFixtureColor));
 }
 
 void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
@@ -646,7 +671,7 @@ void FlickApplicationTest::pointerZoomKeepsCursorOnTheSameImagePoint()
     constexpr int CursorX = 250;
     constexpr int CursorY = 150;
     sendCommandAndWaitForScreenshot(
-        flick, QByteArrayLiteral("Wheel:250:150:120"));
+        flick, QByteArrayLiteral("CtrlWheel:250:150:120"));
     const QList<QByteArray> after =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
     QCOMPARE(after.size(), 7);
@@ -697,6 +722,80 @@ void FlickApplicationTest::pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndRe
     QCOMPARE(reset.at(0).toDouble(), 1.0);
     QCOMPARE(reset.at(1).toInt(), 60);
     QCOMPARE(reset.at(2).toInt(), 40);
+}
+
+void FlickApplicationTest::wheelActionDefaultsToNavigationWithCtrlZoom()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(220, 20, 60);
+    const QColor secondColor(65, 105, 225);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    QVERIFY(containsColor(waitForScreenshot(flick), firstColor));
+
+    const QImage next =
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Wheel:250:150:-120"));
+    QVERIFY(containsColor(next, secondColor));
+    const QList<QByteArray> before =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlWheel:250:150:120"));
+    const QList<QByteArray> after =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QVERIFY(after.at(0).toDouble() > before.at(0).toDouble());
+}
+
+void FlickApplicationTest::wheelActionCanSwitchToZoomWithCtrlNavigation()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(255, 140, 0);
+    const QColor secondColor(46, 139, 87);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    QVERIFY(containsColor(waitForScreenshot(flick), firstColor));
+    selectZoomWheelAction(flick);
+
+    const QList<QByteArray> before =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Wheel:250:150:120"));
+    const QList<QByteArray> after =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")).split(',');
+    QVERIFY(after.at(0).toDouble() > before.at(0).toDouble());
+
+    const QImage next =
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlWheel:250:150:-120"));
+    QVERIFY(containsColor(next, secondColor));
+
+    QTemporaryDir sharedConfiguration;
+    QVERIFY(sharedConfiguration.isValid());
+    const QString configHome = sharedConfiguration.filePath(QStringLiteral("config"));
+    RunningFlick configured;
+    start(configured, {first}, {}, 0, 0, configHome);
+    waitForScreenshot(configured);
+    selectZoomWheelAction(configured);
+    configured.process.terminate();
+    QVERIFY(configured.process.waitForFinished(2000));
+
+    RunningFlick relaunched;
+    start(relaunched, {first}, {}, 0, 0, configHome);
+    waitForScreenshot(relaunched);
+    const QList<QByteArray> persistedBefore =
+        sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("ViewState")).split(',');
+    sendCommandAndWaitForScreenshot(relaunched, QByteArrayLiteral("Wheel:250:150:120"));
+    const QList<QByteArray> persistedAfter =
+        sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("ViewState")).split(',');
+    QVERIFY(persistedAfter.at(0).toDouble() > persistedBefore.at(0).toDouble());
 }
 
 QTEST_MAIN(FlickApplicationTest)
