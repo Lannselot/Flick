@@ -52,7 +52,9 @@ image sequence by default, while `Ctrl` plus the wheel zooms around the pointer.
 The viewport context menu can swap those primary and alternate wheel actions.
 Drag with the left mouse button to pan, or pan with `Shift` plus an arrow key.
 Plain left and right arrows continue to browse the image sequence at any zoom
-level.
+level. Press `L` or `R` to rotate only the current view left or right by 90
+degrees. This temporary rotation is discarded when another image is selected
+and never changes the source file.
 
 ## License
 

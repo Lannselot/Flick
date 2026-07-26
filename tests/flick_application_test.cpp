@@ -42,6 +42,7 @@ private slots:
     void pansByDragAndShiftArrowsWhilePlainArrowsNavigateAndResetView();
     void wheelActionDefaultsToNavigationWithCtrlZoom();
     void wheelActionCanSwitchToZoomWithCtrlNavigation();
+    void temporarilyRotatesCurrentViewAndResetsOnNavigation();
 
 private:
     struct RunningFlick
@@ -796,6 +797,54 @@ void FlickApplicationTest::wheelActionCanSwitchToZoomWithCtrlNavigation()
     const QList<QByteArray> persistedAfter =
         sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("ViewState")).split(',');
     QVERIFY(persistedAfter.at(0).toDouble() > persistedBefore.at(0).toDouble());
+}
+
+void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(255, 69, 0);
+    const QColor secondColor(50, 205, 50);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor,
+                                     QSize(120, 80));
+    const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor,
+                                      QSize(120, 80));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    QFile source(first);
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    const QByteArray bytesBefore = source.readAll();
+    source.close();
+
+    RunningFlick flick;
+    start(flick, {first});
+    const QSize initialSize = colorBounds(waitForScreenshot(flick), firstColor).size();
+    QVERIFY(initialSize.width() > initialSize.height());
+
+    const QImage left = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("RotateLeft"));
+    const QSize leftSize = colorBounds(left, firstColor).size();
+    QVERIFY(leftSize.height() > leftSize.width());
+    const QImage fitted = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Fit"));
+    const QSize fittedSize = colorBounds(fitted, firstColor).size();
+    QVERIFY(fittedSize.height() >= 317);
+    QVERIFY(fittedSize.height() > fittedSize.width());
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("ActualSize"));
+    const QImage restored =
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("RotateRight"));
+    const QSize restoredSize = colorBounds(restored, firstColor).size();
+    QVERIFY(restoredSize.width() > restoredSize.height());
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("RotateRight"));
+    const QImage next = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Right"));
+    const QSize nextSize = colorBounds(next, secondColor).size();
+    QVERIFY(nextSize.width() > nextSize.height());
+    const QImage previous = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Left"));
+    const QSize previousSize = colorBounds(previous, firstColor).size();
+    QVERIFY(previousSize.width() > previousSize.height());
+
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    QCOMPARE(source.readAll(), bytesBefore);
 }
 
 QTEST_MAIN(FlickApplicationTest)

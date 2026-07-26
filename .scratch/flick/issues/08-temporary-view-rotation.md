@@ -6,8 +6,8 @@
 
 **Status:** ready-for-agent
 
-- [ ] `L` and `R` rotate the current view left and right in 90-degree increments.
-- [ ] Rotation composes predictably with automatic orientation, zoom, fit, and pan.
-- [ ] Navigating to another image discards the temporary rotation.
-- [ ] Returning to a previously viewed image does not restore temporary rotation.
-- [ ] The source file and its metadata remain byte-for-byte unchanged.
+- [x] `L` and `R` rotate the current view left and right in 90-degree increments.
+- [x] Rotation composes predictably with automatic orientation, zoom, fit, and pan.
+- [x] Navigating to another image discards the temporary rotation.
+- [x] Returning to a previously viewed image does not restore temporary rotation.
+- [x] The source file and its metadata remain byte-for-byte unchanged.

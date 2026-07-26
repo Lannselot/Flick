@@ -25,6 +25,7 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <QTransform>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWheelEvent>
@@ -391,6 +392,14 @@ protected:
             fitToViewport();
             return;
         }
+        if (event->key() == Qt::Key_L) {
+            rotateView(-1);
+            return;
+        }
+        if (event->key() == Qt::Key_R) {
+            rotateView(1);
+            return;
+        }
         if (event->modifiers().testFlag(Qt::ShiftModifier)) {
             constexpr int KeyboardPanStep = 40;
             if (event->key() == Qt::Key_Left) {
@@ -568,6 +577,7 @@ private:
 
     void displayImage(const int index)
     {
+        rotationQuarterTurns_ = 0;
         currentIndex_ = index;
         requestedPath_ = sequence_.at(index);
         if (cache_.contains(requestedPath_)) {
@@ -615,8 +625,9 @@ private:
             return 1.0;
         }
         const QSize available = viewport_->viewport()->size();
-        return std::min(double(available.width()) / image_.width(),
-                        double(available.height()) / image_.height());
+        const QSize imageSize = rotatedImageSize();
+        return std::min(double(available.width()) / imageSize.width(),
+                        double(available.height()) / imageSize.height());
     }
 
     void applyInitialZoom()
@@ -675,19 +686,47 @@ private:
         vertical->setValue(vertical->value() + verticalDistance);
     }
 
+    void rotateView(const int quarterTurns)
+    {
+        if (image_.isNull()) {
+            return;
+        }
+        rotationQuarterTurns_ = (rotationQuarterTurns_ + quarterTurns) % 4;
+        if (rotationQuarterTurns_ < 0) {
+            rotationQuarterTurns_ += 4;
+        }
+        renderImage();
+        scheduleCenterView();
+    }
+
     void renderImage()
     {
         const QSize displayedSize = displayedImageSize();
         imageLabel_->setPixmap(
-            QPixmap::fromImage(image_).scaled(displayedSize, Qt::IgnoreAspectRatio,
-                                               Qt::SmoothTransformation));
+            QPixmap::fromImage(rotatedImage()).scaled(displayedSize, Qt::IgnoreAspectRatio,
+                                                       Qt::SmoothTransformation));
         imageLabel_->setFixedSize(displayedSize + viewport_->viewport()->size());
+    }
+
+    QImage rotatedImage() const
+    {
+        if (rotationQuarterTurns_ == 0) {
+            return image_;
+        }
+        return image_.transformed(QTransform().rotate(rotationQuarterTurns_ * 90));
+    }
+
+    QSize rotatedImageSize() const
+    {
+        return rotationQuarterTurns_ % 2 == 0 ? image_.size()
+                                              : QSize(image_.height(), image_.width());
     }
 
     QSize displayedImageSize() const
     {
-        return QSize(qMax(1, qRound(image_.width() * zoom_)),
-                     qMax(1, qRound(image_.height() * zoom_)));
+        const QSize imageSize = rotatedImageSize();
+        return QSize(qMax(1, qRound(imageSize.width() * zoom_)),
+                     qMax(1, qRound(imageSize.height() * zoom_)));
     }
 
     QPoint imageOrigin() const
@@ -890,6 +929,7 @@ private:
     bool animationPaused_ = false;
     WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;
+    int rotationQuarterTurns_ = 0;
     bool dragging_ = false;
     QPointF lastDragPosition_;
     QHash<QString, CacheEntry> cache_;
@@ -1030,6 +1070,8 @@ int main(int argc, char *argv[])
                                   : input.startsWith("ShiftRight") ? Qt::Key_Right
                                   : input.startsWith("ShiftUp") ? Qt::Key_Up
                                   : input.startsWith("ShiftDown") ? Qt::Key_Down
+                                  : input.startsWith("RotateLeft") ? Qt::Key_L
+                                  : input.startsWith("RotateRight") ? Qt::Key_R
                                   : input.startsWith("Left")    ? Qt::Key_Left
                                   : input.startsWith("Space")   ? Qt::Key_Space
                                                                 : Qt::Key_Right;
