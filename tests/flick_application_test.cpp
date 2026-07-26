@@ -29,6 +29,8 @@ private slots:
     void opensSelectedImageWithCtrlO();
     void singleImageDropBrowsesContainingDirectory();
     void multipleImageDropBrowsesOnlySupportedDroppedFilesInNaturalOrder();
+    void directorySequenceTracksExternalFilesystemChanges();
+    void explicitListIgnoresExternalDirectoryAdditions();
     void cancelledPickerAndUnsupportedDropRemainStable();
     void decodingRemainsResponsiveAndStaleResultsAreIgnored();
     void prefetchedImagesAreReusedAndCacheIsBounded();
@@ -446,6 +448,71 @@ void FlickApplicationTest::multipleImageDropBrowsesOnlySupportedDroppedFilesInNa
     const QImage boundary = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
     QVERIFY(containsColor(boundary, tenthColor));
     QVERIFY(boundary != next);
+}
+
+void FlickApplicationTest::directorySequenceTracksExternalFilesystemChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(220, 20, 60);
+    const QColor secondColor(50, 205, 50);
+    const QColor thirdColor(65, 105, 225);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString third = writeImage(directory, QStringLiteral("image3.png"), thirdColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!third.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first});
+    QVERIFY(containsColor(waitForScreenshot(flick), firstColor));
+
+    const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor);
+    QVERIFY(!second.isEmpty());
+    QTest::qWait(300);
+    QVERIFY(containsColor(pressKeyAndWaitForScreenshot(flick, Qt::Key_Right), secondColor));
+
+    QVERIFY(QFile::remove(second));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        containsColor(captureAfter(flick, 50), thirdColor), 3000);
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("Feedback"))
+                .contains("Current image is no longer available"));
+
+    const QString renamed = directory.filePath(QStringLiteral("image4.png"));
+    QVERIFY(QFile::rename(third, renamed));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        containsColor(captureAfter(flick, 50), thirdColor), 3000);
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("Feedback"))
+                .contains("Current image is no longer available"));
+
+    QVERIFY(QFile::remove(renamed));
+    QVERIFY(QFile::remove(first));
+    QTest::qWait(1700);
+    RunningFlick empty;
+    start(empty);
+    QCOMPARE(captureAfter(flick, 50), waitForScreenshot(empty));
+    QVERIFY(flick.process.state() == QProcess::Running);
+}
+
+void FlickApplicationTest::explicitListIgnoresExternalDirectoryAdditions()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(255, 140, 0);
+    const QColor thirdColor(0, 206, 209);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString third = writeImage(directory, QStringLiteral("image3.png"), thirdColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!third.isEmpty());
+
+    RunningFlick flick;
+    start(flick);
+    waitForScreenshot(flick);
+    const QByteArray drop = QByteArrayLiteral("Drop:") + first.toUtf8() + '|' + third.toUtf8();
+    QVERIFY(containsColor(sendCommandAndWaitForScreenshot(flick, drop), firstColor));
+
+    QVERIFY(!writeImage(directory, QStringLiteral("image2.png"), QColor(Qt::magenta)).isEmpty());
+    QTest::qWait(200);
+    QVERIFY(containsColor(pressKeyAndWaitForScreenshot(flick, Qt::Key_Right), thirdColor));
 }
 
 void FlickApplicationTest::cancelledPickerAndUnsupportedDropRemainStable()

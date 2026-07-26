@@ -20,6 +20,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QImageReader>
 #include <QKeyEvent>
 #include <QLabel>
@@ -342,6 +343,11 @@ public:
         QObject::connect(animationTimer_, &QTimer::timeout, this, [this] {
             advanceAnimation();
         });
+        directoryWatcher_ = new QFileSystemWatcher(this);
+        QObject::connect(directoryWatcher_, &QFileSystemWatcher::directoryChanged, this,
+                         [this] {
+                             refreshDirectorySequence();
+                         });
 
         statusDisplay_ = new QLabel(viewport_->viewport());
         statusDisplay_->setAlignment(Qt::AlignCenter);
@@ -820,9 +826,9 @@ private:
         });
     }
 
-    static QStringList directorySequence(const QString &imagePath)
+    static QStringList directorySequenceForDirectory(const QString &directoryPath)
     {
-        const QDir directory = QFileInfo(imagePath).absoluteDir();
+        const QDir directory(directoryPath);
         QStringList paths;
         for (const QFileInfo &entry : directory.entryInfoList(QDir::Files)) {
             if (isSupportedImage(entry.filePath())) {
@@ -833,6 +839,11 @@ private:
         return paths;
     }
 
+    static QStringList directorySequence(const QString &imagePath)
+    {
+        return directorySequenceForDirectory(QFileInfo(imagePath).absolutePath());
+    }
+
     void openDirectoryBacked(const QString &path)
     {
         if (!isSupportedImage(path)) {
@@ -840,6 +851,10 @@ private:
             return;
         }
         const QString canonicalPath = QFileInfo(path).canonicalFilePath();
+        directoryBacked_ = true;
+        const QString directoryPath = QFileInfo(canonicalPath).absolutePath();
+        directoryWatcher_->removePaths(directoryWatcher_->directories());
+        directoryWatcher_->addPath(directoryPath);
         sequence_ = directorySequence(canonicalPath);
         const int openedIndex = sequence_.indexOf(canonicalPath);
         if (openedIndex < 0) {
@@ -851,6 +866,8 @@ private:
 
     void openExplicitList(const QStringList &paths)
     {
+        directoryBacked_ = false;
+        directoryWatcher_->removePaths(directoryWatcher_->directories());
         sequence_.clear();
         for (const QString &path : paths) {
             if (isSupportedImage(path)) {
@@ -955,6 +972,45 @@ private:
         setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
         boundaryTimer_->stop();
         boundaryMessage_->hide();
+        if (!pendingFeedback_.isEmpty()) {
+            const QString feedback = pendingFeedback_;
+            pendingFeedback_.clear();
+            showFeedback(feedback);
+        }
+    }
+
+    void refreshDirectorySequence()
+    {
+        if (!directoryBacked_ || directoryWatcher_->directories().isEmpty()) {
+            return;
+        }
+        const int previousIndex = currentIndex_;
+        const QString previousPath = requestedPath_;
+        QStringList refreshed =
+            directorySequenceForDirectory(directoryWatcher_->directories().constFirst());
+        const int preservedIndex = refreshed.indexOf(previousPath);
+        sequence_ = std::move(refreshed);
+        if (preservedIndex >= 0) {
+            currentIndex_ = preservedIndex;
+            updateStatusText();
+            prefetchNeighbors();
+            return;
+        }
+
+        currentIndex_ = -1;
+        requestedPath_.clear();
+        if (sequence_.isEmpty()) {
+            currentImage_ = {};
+            image_ = {};
+            animationTimer_->stop();
+            setWindowTitle(QStringLiteral("Flick"));
+            showEmptyState();
+            showFeedback(tr("Current image is no longer available"));
+            return;
+        }
+
+        pendingFeedback_ = tr("Current image is no longer available");
+        displayImage(std::clamp(previousIndex, 0, int(sequence_.size()) - 1));
     }
 
     void showFrame(const int index)
@@ -1260,12 +1316,15 @@ private:
     QLabel *boundaryMessage_ = nullptr;
     QTimer *boundaryTimer_ = nullptr;
     QTimer *animationTimer_ = nullptr;
+    QFileSystemWatcher *directoryWatcher_ = nullptr;
     QLabel *emptyState_ = nullptr;
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
     QStringList sequence_;
     int currentIndex_ = -1;
     QString requestedPath_;
+    QString pendingFeedback_;
+    bool directoryBacked_ = false;
     DecodedImage currentImage_;
     int currentFrame_ = 0;
     int completedLoops_ = 0;
