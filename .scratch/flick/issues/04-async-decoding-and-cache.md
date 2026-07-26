@@ -4,11 +4,11 @@
 
 **Blocked by:** 02 — Directory sequence and keyboard navigation.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Loading and navigation remain responsive while image decoding is in progress.
-- [ ] The previous and next sequence items are prefetched when available.
-- [ ] Navigation to a prefetched item uses the ready result without redundant visible loading.
-- [ ] Decoded content observes an approximately 512 MB default cache budget and is evicted automatically.
-- [ ] Rapid navigation cannot allow stale decode results to replace the current image.
-- [ ] Process-level tests exercise responsiveness and bounded memory under cache churn.
+- [x] Loading and navigation remain responsive while image decoding is in progress.
+- [x] The previous and next sequence items are prefetched when available.
+- [x] Navigation to a prefetched item uses the ready result without redundant visible loading.
+- [x] Decoded content observes an approximately 512 MB default cache budget and is evicted automatically.
+- [x] Rapid navigation cannot allow stale decode results to replace the current image.
+- [x] Process-level tests exercise responsiveness and bounded memory under cache churn.

@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QCollator>
+#include <QFutureWatcher>
+#include <QHash>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -14,11 +16,18 @@
 #include <QMimeData>
 #include <QScrollArea>
 #include <QSettings>
+#include <QSet>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrentRun>
 
 #include <algorithm>
+#include <cstdio>
+#include <functional>
+#include <limits>
+#include <memory>
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
 #include <QPixmap>
@@ -29,12 +38,25 @@
 
 namespace {
 constexpr auto EmptyStateText = "No image open";
+constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
+
+struct DecodedImage
+{
+    QString path;
+    QImage image;
+};
 
 class ViewerWindow final : public QWidget
 {
 public:
     explicit ViewerWindow(const QString &imagePath)
     {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        const qint64 testBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
+        if (testBudget > 0) {
+            cacheBudgetBytes_ = testBudget;
+        }
+#endif
         setWindowTitle(QStringLiteral("Flick"));
         setMinimumSize(480, 320);
         setAcceptDrops(true);
@@ -73,6 +95,23 @@ public:
             openDirectoryBacked(imagePath);
         }
     }
+
+    bool isLoading() const
+    {
+        return decodesInFlight_.contains(requestedPath_);
+    }
+
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    qsizetype cacheBytes() const
+    {
+        return cachedBytes_;
+    }
+
+    int decodeCount(const QString &path) const
+    {
+        return decodeCounts_.value(QFileInfo(path).canonicalFilePath());
+    }
+#endif
 
 protected:
     void keyPressEvent(QKeyEvent *event) override
@@ -156,9 +195,11 @@ private:
         const QString canonicalPath = QFileInfo(path).canonicalFilePath();
         sequence_ = directorySequence(canonicalPath);
         const int openedIndex = sequence_.indexOf(canonicalPath);
-        if (openedIndex < 0 || !displayImage(openedIndex)) {
+        if (openedIndex < 0) {
             showEmptyState();
+            return;
         }
+        displayImage(openedIndex);
     }
 
     void openExplicitList(const QStringList &paths)
@@ -173,9 +214,11 @@ private:
             }
         }
         sortNaturally(sequence_);
-        if (sequence_.isEmpty() || !displayImage(0)) {
+        if (sequence_.isEmpty()) {
             showFeedback(tr("No supported images in drop"));
+            return;
         }
+        displayImage(0);
     }
 
     void openDroppedPaths(const QStringList &paths)
@@ -221,24 +264,122 @@ private:
         openDirectoryBacked(selectedPath);
     }
 
-    bool displayImage(const int index)
+    void displayImage(const int index)
     {
-        QImageReader reader(sequence_.at(index));
-        reader.setAutoTransform(true);
-        const QImage image = reader.read();
-        if (image.isNull()) {
-            return false;
-        }
         currentIndex_ = index;
+        requestedPath_ = sequence_.at(index);
+        if (cache_.contains(requestedPath_)) {
+            touch(requestedPath_);
+            present(requestedPath_, cache_.value(requestedPath_).image);
+            prefetchNeighbors();
+            return;
+        }
+        decode(requestedPath_);
+    }
+
+    void present(const QString &path, const QImage &image)
+    {
+        if (image.isNull() || requestedPath_ != path) {
+            return;
+        }
         image_ = image;
         imageLabel_->setPixmap(QPixmap::fromImage(image_));
         imageLabel_->setMinimumSize(image_.size());
         emptyState_->hide();
         viewport_->show();
-        setWindowTitle(tr("Flick — %1").arg(QFileInfo(sequence_.at(currentIndex_)).fileName()));
+        setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
         boundaryTimer_->stop();
         boundaryMessage_->hide();
-        return true;
+    }
+
+    void decode(const QString &path)
+    {
+        if (path.isEmpty() || cache_.contains(path) || decodesInFlight_.contains(path)) {
+            return;
+        }
+        decodesInFlight_.insert(path);
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        ++decodeCounts_[path];
+        const int delayMilliseconds = qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
+#else
+        constexpr int delayMilliseconds = 0;
+#endif
+        auto *watcher = new QFutureWatcher<DecodedImage>(this);
+        QObject::connect(watcher, &QFutureWatcher<DecodedImage>::finished, this,
+                         [this, watcher] {
+                             const DecodedImage decoded = watcher->result();
+                             watcher->deleteLater();
+                             decodesInFlight_.remove(decoded.path);
+                             if (!decoded.image.isNull()) {
+                                 insertCache(decoded.path, decoded.image);
+                             }
+                             if (requestedPath_ == decoded.path) {
+                                 if (decoded.image.isNull()) {
+                                     showEmptyState();
+                                 } else {
+                                     present(decoded.path, decoded.image);
+                                     prefetchNeighbors();
+                                 }
+                             }
+                         });
+        watcher->setFuture(QtConcurrent::run([path, delayMilliseconds] {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+            if (delayMilliseconds > 0) {
+                QThread::msleep(static_cast<unsigned long>(delayMilliseconds));
+            }
+#endif
+            QImageReader reader(path);
+            reader.setAutoTransform(true);
+            return DecodedImage{path, reader.read()};
+        }));
+    }
+
+    struct CacheEntry
+    {
+        QImage image;
+        quint64 lastUse = 0;
+    };
+
+    void touch(const QString &path)
+    {
+        cache_[path].lastUse = ++accessCounter_;
+    }
+
+    void insertCache(const QString &path, const QImage &image)
+    {
+        const qsizetype bytes = image.sizeInBytes();
+        if (bytes > cacheBudgetBytes_) {
+            return;
+        }
+        if (cache_.contains(path)) {
+            cachedBytes_ -= cache_.value(path).image.sizeInBytes();
+        }
+        cache_.insert(path, CacheEntry{image, ++accessCounter_});
+        cachedBytes_ += bytes;
+        while (cachedBytes_ > cacheBudgetBytes_ && !cache_.isEmpty()) {
+            QString oldestPath;
+            quint64 oldestUse = std::numeric_limits<quint64>::max();
+            for (auto it = cache_.cbegin(); it != cache_.cend(); ++it) {
+                if (it.value().lastUse < oldestUse && it.key() != requestedPath_) {
+                    oldestPath = it.key();
+                    oldestUse = it.value().lastUse;
+                }
+            }
+            if (oldestPath.isEmpty()) {
+                break;
+            }
+            cachedBytes_ -= cache_.value(oldestPath).image.sizeInBytes();
+            cache_.remove(oldestPath);
+        }
+    }
+
+    void prefetchNeighbors()
+    {
+        for (const int neighbor : {currentIndex_ - 1, currentIndex_ + 1}) {
+            if (neighbor >= 0 && neighbor < sequence_.size()) {
+                decode(sequence_.at(neighbor));
+            }
+        }
     }
 
     void navigate(const int offset)
@@ -274,6 +415,15 @@ private:
     QLabel *emptyState_ = nullptr;
     QStringList sequence_;
     int currentIndex_ = -1;
+    QString requestedPath_;
+    QHash<QString, CacheEntry> cache_;
+    QSet<QString> decodesInFlight_;
+    qsizetype cachedBytes_ = 0;
+    qsizetype cacheBudgetBytes_ = DefaultCacheBudgetBytes;
+    quint64 accessCounter_ = 0;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    QHash<QString, int> decodeCounts_;
+#endif
 };
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -300,7 +450,15 @@ int main(int argc, char *argv[])
     window.show();
     window.setFocus();
 #ifdef FLICK_ENABLE_TEST_HARNESS
-    QTimer::singleShot(0, &application, [&window] { captureVisibleWindow(window); });
+    auto initialCapture = std::make_shared<std::function<void()>>();
+    *initialCapture = [&application, &window, initialCapture] {
+        if (window.isLoading()) {
+            QTimer::singleShot(10, &application, *initialCapture);
+            return;
+        }
+        captureVisibleWindow(window);
+    };
+    QTimer::singleShot(0, &application, *initialCapture);
     QSocketNotifier testCommands(STDIN_FILENO, QSocketNotifier::Read, &application);
     QObject::connect(
         &testCommands, &QSocketNotifier::activated, &application, [&application, &window] {
@@ -310,7 +468,17 @@ int main(int argc, char *argv[])
                 return;
             }
             const QByteArray input(command, bytesRead);
-            if (input.startsWith("Drop:")) {
+            const bool captureImmediately = input.startsWith("Capture");
+            if (input.startsWith("CacheBytes")) {
+                fprintf(stdout, "%lld\n", static_cast<long long>(window.cacheBytes()));
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("DecodeCount:")) {
+                const QString path = QString::fromUtf8(input.mid(12).trimmed());
+                fprintf(stdout, "%d\n", window.decodeCount(path));
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("Drop:")) {
                 const QList<QByteArray> encodedPaths = input.mid(5).trimmed().split('|');
                 auto *mimeData = new QMimeData;
                 QList<QUrl> urls;
@@ -334,7 +502,15 @@ int main(int argc, char *argv[])
                 QWidget *target = QApplication::focusWidget();
                 QApplication::sendEvent(target != nullptr ? target : &window, &event);
             }
-            QTimer::singleShot(0, &application, [&window] { captureVisibleWindow(window); });
+            auto captureWhenReady = std::make_shared<std::function<void()>>();
+            *captureWhenReady = [&application, &window, captureImmediately, captureWhenReady] {
+                if (!captureImmediately && window.isLoading()) {
+                    QTimer::singleShot(10, &application, *captureWhenReady);
+                    return;
+                }
+                captureVisibleWindow(window);
+            };
+            QTimer::singleShot(0, &application, *captureWhenReady);
         });
 #endif
 

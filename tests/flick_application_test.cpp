@@ -29,6 +29,8 @@ private slots:
     void singleImageDropBrowsesContainingDirectory();
     void multipleImageDropBrowsesOnlySupportedDroppedFilesInNaturalOrder();
     void cancelledPickerAndUnsupportedDropRemainStable();
+    void decodingRemainsResponsiveAndStaleResultsAreIgnored();
+    void prefetchedImagesAreReusedAndCacheIsBounded();
 
 private:
     struct RunningFlick
@@ -47,11 +49,13 @@ private:
     };
 
     void start(RunningFlick &flick, const QStringList &arguments = {},
-               const QString &pickerSelection = {});
+               const QString &pickerSelection = {}, int decodeDelayMilliseconds = 0,
+               int cacheBudgetBytes = 0);
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
     QImage sendCommandAndWaitForScreenshot(RunningFlick &flick, const QByteArray &command);
     QImage captureAfter(RunningFlick &flick, int delayMilliseconds);
+    QByteArray sendQueryAndWaitForReply(RunningFlick &flick, const QByteArray &command);
     QString writeFixture(const QString &encodedName, const QString &imageName);
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
                               const QColor &color);
@@ -85,7 +89,9 @@ QString FlickApplicationTest::writeFixture(const QString &encodedName, const QSt
 }
 
 void FlickApplicationTest::start(RunningFlick &flick, const QStringList &arguments,
-                                 const QString &pickerSelection)
+                                 const QString &pickerSelection,
+                                 const int decodeDelayMilliseconds,
+                                 const int cacheBudgetBytes)
 {
     QVERIFY(flick.environment.isValid());
     const QString config = flick.environment.filePath(QStringLiteral("config"));
@@ -111,6 +117,14 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     environment.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
     environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), flick.screenshotPath);
     environment.insert(QStringLiteral("FLICK_TEST_FILE_PICKER_SELECTION"), pickerSelection);
+    if (decodeDelayMilliseconds > 0) {
+        environment.insert(QStringLiteral("FLICK_TEST_DECODE_DELAY_MS"),
+                           QString::number(decodeDelayMilliseconds));
+    }
+    if (cacheBudgetBytes > 0) {
+        environment.insert(QStringLiteral("FLICK_TEST_CACHE_BUDGET_BYTES"),
+                           QString::number(cacheBudgetBytes));
+    }
     flick.process.setProcessEnvironment(environment);
     flick.process.start(executable_, arguments);
     QVERIFY2(flick.process.waitForStarted(), qPrintable(flick.process.errorString()));
@@ -141,7 +155,7 @@ QImage FlickApplicationTest::pressKeyAndWaitForScreenshot(RunningFlick &flick, c
 QImage FlickApplicationTest::sendCommandAndWaitForScreenshot(RunningFlick &flick,
                                                               const QByteArray &command)
 {
-    if (!QFile::remove(flick.screenshotPath)) {
+    if (QFile::exists(flick.screenshotPath) && !QFile::remove(flick.screenshotPath)) {
         QTest::qFail("Could not remove the previous screenshot", __FILE__, __LINE__);
         return {};
     }
@@ -167,6 +181,19 @@ QImage FlickApplicationTest::captureAfter(RunningFlick &flick, const int delayMi
         return {};
     }
     return waitForScreenshot(flick);
+}
+
+QByteArray FlickApplicationTest::sendQueryAndWaitForReply(RunningFlick &flick,
+                                                           const QByteArray &command)
+{
+    flick.process.readAllStandardOutput();
+    const QByteArray terminatedCommand = command + '\n';
+    if (flick.process.write(terminatedCommand) != terminatedCommand.size() ||
+        !flick.process.waitForBytesWritten() || !flick.process.waitForReadyRead(5000)) {
+        QTest::qFail("Flick did not answer a test query", __FILE__, __LINE__);
+        return {};
+    }
+    return flick.process.readAllStandardOutput().trimmed();
 }
 
 QString FlickApplicationTest::writeImage(const QTemporaryDir &directory, const QString &name,
@@ -367,6 +394,72 @@ void FlickApplicationTest::cancelledPickerAndUnsupportedDropRemainStable()
     QVERIFY(feedback != empty);
     QCOMPARE(captureAfter(flick, 1600), empty);
     QVERIFY(flick.process.state() == QProcess::Running);
+}
+
+void FlickApplicationTest::decodingRemainsResponsiveAndStaleResultsAreIgnored()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(178, 34, 34);
+    const QColor secondColor(34, 139, 34);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first}, {}, 700);
+    QElapsedTimer responsiveness;
+    responsiveness.start();
+    const QImage loading = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Capture"));
+    QVERIFY2(responsiveness.elapsed() < 500, "UI command handling blocked on image decoding");
+    QVERIFY(!containsColor(loading, firstColor));
+
+    QTest::qWait(800);
+    QVERIFY(containsColor(captureAfter(flick, 0), firstColor));
+
+    flick.process.write("Right\n");
+    QVERIFY(flick.process.waitForBytesWritten());
+    QTest::qWait(50);
+    flick.process.write("Left\n");
+    QVERIFY(flick.process.waitForBytesWritten());
+    QTest::qWait(800);
+    const QImage settled = captureAfter(flick, 0);
+    QVERIFY(containsColor(settled, firstColor));
+    QVERIFY(!containsColor(settled, secondColor));
+}
+
+void FlickApplicationTest::prefetchedImagesAreReusedAndCacheIsBounded()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString first =
+        writeImage(directory, QStringLiteral("image1.png"), QColor(70, 130, 180));
+    const QString second =
+        writeImage(directory, QStringLiteral("image2.png"), QColor(255, 165, 0));
+    const QString third =
+        writeImage(directory, QStringLiteral("image3.png"), QColor(148, 0, 211));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+    QVERIFY(!third.isEmpty());
+
+    constexpr int CacheBudgetBytes = 7000;
+    RunningFlick flick;
+    start(flick, {first}, {}, 0, CacheBudgetBytes);
+    waitForScreenshot(flick);
+    QTRY_COMPARE_WITH_TIMEOUT(sendQueryAndWaitForReply(flick, QByteArrayLiteral("DecodeCount:") +
+                                                                 second.toUtf8()),
+                              QByteArrayLiteral("1"), 5000);
+
+    pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("DecodeCount:") + second.toUtf8()),
+             QByteArrayLiteral("1"));
+
+    pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    const qint64 cachedBytes =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("CacheBytes")).toLongLong();
+    QVERIFY(cachedBytes > 0);
+    QVERIFY(cachedBytes <= CacheBudgetBytes);
 }
 
 QTEST_MAIN(FlickApplicationTest)

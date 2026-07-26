@@ -14,7 +14,9 @@ flowchart TB
         Window[ViewerWindow]
         Input[Обработчики ввода<br/>клавиатура и drag-and-drop]
         Sequence[Последовательность путей<br/>sequence_ и currentIndex_]
+        Workers[QtConcurrent workers]
         Reader[QImageReader]
+        Cache[Decoded image cache<br/>512 MB byte budget]
         Image[QImage<br/>декодированные пиксели]
         Pixmap[QPixmap]
         Label[QLabel]
@@ -25,9 +27,11 @@ flowchart TB
         Main --> Window
         Window --> Input
         Input --> Sequence
-        Sequence --> Reader
+        Sequence --> Workers
+        Workers --> Reader
         Reader --> Image
-        Image --> Pixmap
+        Image --> Cache
+        Cache --> Pixmap
         Pixmap --> Label
         Label --> Viewport
         Window --> Feedback
@@ -68,7 +72,8 @@ sequenceDiagram
         Window->>Window: Фильтрация, удаление дублей и сортировка
     end
 
-    Window->>Reader: QImageReader(path)
+    Window->>Reader: Запускает декодирование через QtConcurrent
+    Reader->>Reader: QImageReader(path)
     Window->>Reader: setAutoTransform(true)
     Reader->>FS: Читает закодированные данные
     FS-->>Reader: Байты файла
@@ -76,8 +81,10 @@ sequenceDiagram
     Reader-->>Window: QImage
 
     alt Декодирование успешно
-        Window->>Window: Сохраняет image_ и currentIndex_
+        Window->>Window: Добавляет QImage в ограниченный кеш
+        Window->>Window: Сверяет путь с последним запросом
         Window->>UI: QPixmap::fromImage(image_)
+        Window->>Reader: Предзагружает соседние элементы
         UI-->>User: Показывает изображение
     else Получен пустой QImage
         Window->>UI: Показывает пустое состояние
@@ -85,8 +92,11 @@ sequenceDiagram
     end
 ```
 
-Декодирование вызывается синхронно через `QImageReader::read()` в GUI-потоке.
-Фоновая загрузка, предзагрузка соседних файлов и кеш пока не реализованы.
+`QImageReader::read()` выполняется в пуле рабочих потоков через `QtConcurrent`.
+GUI-поток принимает только готовый `QImage`, сверяет его путь с последним
+запрошенным элементом и поэтому игнорирует устаревшие результаты. Предыдущий и
+следующий элементы предзагружаются. Декодированные изображения хранятся в кеше
+с LRU-вытеснением и бюджетом около 512 МБ.
 
 ## Навигация по изображениям
 
@@ -99,8 +109,8 @@ stateDiagram-v2
     BuildSequence --> Displayed: последовательность создана<br/>и декодирование успешно
     BuildSequence --> Empty: файл не поддержан<br/>или декодирование не удалось
 
-    Displayed --> DecodePrevious: Left
-    Displayed --> DecodeNext: Right
+    Displayed --> DecodePrevious: Left<br/>или готовый результат из кеша
+    Displayed --> DecodeNext: Right<br/>или готовый результат из кеша
     DecodePrevious --> Displayed: предыдущий файл загружен
     DecodeNext --> Displayed: следующий файл загружен
 
@@ -142,4 +152,3 @@ flowchart LR
 режиме `offscreen`, имитируют пользовательские события и проверяют итоговый
 снимок окна. Тестовый канал команд и создание снимков включаются только при
 определении `FLICK_ENABLE_TEST_HARNESS`.
-

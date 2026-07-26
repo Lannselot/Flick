@@ -37,6 +37,10 @@ The tests launch real, independent Flick processes with controlled image
 fixtures. Each process receives private temporary XDG config, data, cache,
 state, and runtime directories.
 
+Image files are decoded on worker threads. Flick prefetches the previous and
+next images in the current sequence and keeps decoded images in an automatically
+evicted cache with an approximately 512 MB default budget.
+
 ## License
 
 Copyright (C) 2026 Flick contributors
