@@ -841,7 +841,7 @@ void FlickApplicationTest::updatesRenderingWhenTheDisplayProfileChanges()
     const QImage initial = waitForScreenshot(flick);
     QVERIFY(containsColor(initial, QColor(128, 128, 128)));
 
-    sendCommand(flick, QByteArrayLiteral("DisplayIccProfile:") + profile.toUtf8());
+    sendCommand(flick, QByteArrayLiteral("DisplayProfileChanged:") + profile.toUtf8());
     const QImage linear = captureAfter(flick, 50);
     QVERIFY(colorBounds(linear, QColor(128, 128, 128)).size() != QSize(32, 24));
     QVERIFY(containsColor(linear, QColor(55, 55, 55), 1));

@@ -674,9 +674,10 @@ public:
         failExternalActionsForTest_ = true;
     }
 
-    void setTestDisplayIccProfile(const QString &path)
+    void simulateDisplayProfileChange(const QString &path)
     {
-        applyDisplayColorSpace(colorSpaceFromIccFile(path));
+        testDisplayIccProfilePath_ = path;
+        refreshDisplayColorSpace();
     }
 #endif
 
@@ -1455,7 +1456,15 @@ private:
     void refreshDisplayColorSpace()
     {
         QScreen *activeScreen = windowHandle() ? windowHandle()->screen() : screen();
-        QColorSpace exposed = x11DisplayColorSpace(activeScreen);
+        QColorSpace exposed;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        if (!testDisplayIccProfilePath_.isEmpty()) {
+            exposed = colorSpaceFromIccFile(testDisplayIccProfilePath_);
+        }
+#endif
+        if (!exposed.isValid()) {
+            exposed = x11DisplayColorSpace(activeScreen);
+        }
         if (!exposed.isValid()) {
             exposed = colordDisplayColorSpace(activeScreen);
         }
@@ -1876,6 +1885,7 @@ private:
     QHash<QString, int> decodeCounts_;
     QString revealedPath_;
     bool failExternalActionsForTest_ = false;
+    QString testDisplayIccProfilePath_;
 #endif
 };
 
@@ -1948,9 +1958,9 @@ int main(int argc, char *argv[])
                 window.applyTestSettings(
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
                 return;
-            } else if (input.startsWith("DisplayIccProfile:")) {
-                window.setTestDisplayIccProfile(
-                    QString::fromUtf8(input.mid(18).trimmed()));
+            } else if (input.startsWith("DisplayProfileChanged:")) {
+                window.simulateDisplayProfileChange(
+                    QString::fromUtf8(input.mid(22).trimmed()));
             } else if (input.startsWith("Resize:")) {
                 const QList<QByteArray> size = input.mid(7).trimmed().split(':');
                 if (size.size() == 2) {
