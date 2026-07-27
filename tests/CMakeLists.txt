@@ -15,3 +15,12 @@ set_tests_properties(flick.application PROPERTIES
     ENVIRONMENT "FLICK_EXECUTABLE=$<TARGET_FILE:flick>;QT_QPA_PLATFORM=offscreen"
     TIMEOUT 30
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(
+        NAME flick.linux-desktop-metadata
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/linux_desktop_metadata_test.cmake
+    )
+endif()

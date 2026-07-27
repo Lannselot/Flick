@@ -60,6 +60,7 @@ private slots:
     void informationShowsEssentialFacts();
     void copiesPathAndRenderedImageAndExposesContextCommands();
     void revealsCurrentFileAndReportsExternalActionFailures();
+    void exposesAccessibleKeyboardActions();
 
 private:
     struct RunningFlick
@@ -1440,6 +1441,28 @@ void FlickApplicationTest::revealsCurrentFileAndReportsExternalActionFailures()
     QVERIFY(sendQueryAndWaitForReply(failing, QByteArrayLiteral("Feedback"))
                 .contains("Could not show"));
     QVERIFY(failing.process.state() == QProcess::Running);
+}
+
+void FlickApplicationTest::exposesAccessibleKeyboardActions()
+{
+    const QString path =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("accessible.png"));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+
+    const QByteArray accessibility =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("AccessibilityState"));
+    QVERIFY(accessibility.contains("Image viewport|Graphic|"));
+    QVERIFY(accessibility.contains("Open Image|Ctrl+O"));
+    QVERIFY(accessibility.contains("Previous Image|Left"));
+    QVERIFY(accessibility.contains("Next Image|Right"));
+    QVERIFY(accessibility.contains("Fit to Window|F"));
+    QVERIFY(accessibility.contains("Actual Size|1"));
+    QVERIFY(accessibility.contains("Toggle Fullscreen|F11"));
+    QVERIFY(accessibility.contains("Settings|"));
 }
 
 QTEST_MAIN(FlickApplicationTest)

@@ -6,9 +6,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] Every core viewing action can be completed without a mouse and visible focus is preserved where controls are present.
-- [ ] System theme colors, Qt accessibility metadata, and high-DPI scaling are honored.
-- [ ] User-facing English strings are structured for future localization.
+- [x] Every core viewing action can be completed without a mouse and visible focus is preserved where controls are present.
+- [x] System theme colors, Qt accessibility metadata, and high-DPI scaling are honored.
+- [x] User-facing English strings are structured for future localization.
 - [ ] Wayland and X11 runs demonstrate equivalent externally visible core behavior.
-- [ ] Desktop entry and MIME metadata allow supported images to be opened from common Linux file managers.
-- [ ] Documented manual checks cover GNOME and KDE integration where compositor or file-manager behavior is not reliably automatable.
+- [x] Desktop entry and MIME metadata allow supported images to be opened from common Linux file managers.
+- [x] Documented manual checks cover GNOME and KDE integration where compositor or file-manager behavior is not reliably automatable.

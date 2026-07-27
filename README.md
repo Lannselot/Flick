@@ -87,6 +87,12 @@ image, `Ctrl+Shift+C` copies its path, and `Ctrl+Shift+R` shows the file's
 directory in the system file manager. These commands and their shortcuts are
 also available from the viewport context menu.
 
+Linux builds install a freedesktop desktop entry and AppStream metadata so
+supported images can be opened from common file managers. Keyboard,
+accessibility, Wayland/X11, GNOME, KDE, theme, and scaling release checks are
+documented in
+[`docs/linux-integration.md`](docs/linux-integration.md).
+
 ## License
 
 Copyright (C) 2026 Flick contributors

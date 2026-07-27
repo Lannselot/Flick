@@ -40,6 +40,16 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS flick RUNTIME DESTINATION bin)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    install(
+        FILES packaging/linux/org.flick.Flick.desktop
+        DESTINATION share/applications
+    )
+    install(
+        FILES packaging/linux/org.flick.Flick.metainfo.xml
+        DESTINATION share/metainfo
+    )
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

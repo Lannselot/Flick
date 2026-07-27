@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Flick
+GenericName=Image Viewer
+Comment=View local images
+Exec=flick %f
+Icon=image-x-generic
+Terminal=false
+StartupNotify=true
+StartupWMClass=Flick
+MimeType=image/jpeg;image/png;image/webp;image/gif;image/bmp;
+Categories=Graphics;Viewer;
+Keywords=Image;Photo;Picture;Viewer;
