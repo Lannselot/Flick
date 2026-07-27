@@ -36,6 +36,13 @@ add_test(
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_program(BASH_EXECUTABLE bash REQUIRED)
+    add_test(
+        NAME flick.network-trace-filter
+        COMMAND ${BASH_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/network_trace_filter_test.sh
+            ${PROJECT_SOURCE_DIR}
+    )
     add_test(
         NAME flick.no-network-dependencies
         COMMAND ${CMAKE_COMMAND}
