@@ -62,6 +62,7 @@ require(
         "sha256sum",
         "uses: actions/attest@",
         'gh release create "$GITHUB_REF_NAME"',
+        '--repo "$GITHUB_REPOSITORY"',
     ],
 )
 require_actions_pinned(".github/workflows/release-linux.yml")

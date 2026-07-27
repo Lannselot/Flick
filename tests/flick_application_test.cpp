@@ -208,10 +208,7 @@ void FlickApplicationTest::sendCommand(RunningFlick &flick, const QByteArray &co
 
 void FlickApplicationTest::selectZoomWheelAction(RunningFlick &flick)
 {
-    sendCommand(flick, QByteArrayLiteral("ContextMenu:250:150"));
-    sendCommand(flick, QByteArrayLiteral("MenuDown"));
-    sendCommand(flick, QByteArrayLiteral("MenuDown"));
-    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("MenuEnter"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("SelectZoomWheelAction"));
 }
 
 QImage FlickApplicationTest::sendCommandAndWaitForScreenshot(RunningFlick &flick,
