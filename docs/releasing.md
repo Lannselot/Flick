@@ -11,6 +11,9 @@ Before starting:
 
 - all intended changes are merged into `main`;
 - `Linux build and test` is green for the release commit;
+- the manual build and verification procedure in
+  [`manual-build-and-test.md`](manual-build-and-test.md) has passed for the
+  release candidate;
 - the working tree is clean;
 - the CMake project version is the version being released;
 - the operator can create tags and approve the GitHub `release` Environment;
