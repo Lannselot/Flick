@@ -26,6 +26,7 @@ require(
         "permissions:\n  contents: read",
         "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
         "jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730",
+        "modules: qtimageformats",
         "-DBUILD_TESTING=ON",
         "ctest --test-dir build/test --output-on-failure",
         "-DBUILD_TESTING=OFF",
