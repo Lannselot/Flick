@@ -99,6 +99,8 @@ documented in
 [`docs/performance-and-release.md`](docs/performance-and-release.md).
 GitHub pull-request checks, tagged releases, repository settings, and future
 macOS CI separation are documented in [`docs/ci.md`](docs/ci.md).
+The release operator runbook is
+[`docs/releasing.md`](docs/releasing.md).
 
 ## License
 

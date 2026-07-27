@@ -24,6 +24,8 @@ GitHub-hosted runners need no repository secrets for CI.
 
 ## Linux releases
 
+The operator-facing procedure is in [`releasing.md`](releasing.md).
+
 `.github/workflows/release-linux.yml` runs for tags matching `v*`. The tag must
 match the CMake project version exactly; version `0.1.0` is released as
 `v0.1.0`.
