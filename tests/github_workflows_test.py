@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import pathlib
+import re
 import sys
 
 
@@ -17,6 +18,16 @@ def require(path: str, snippets: list[str]) -> None:
             raise AssertionError(f"{path} is missing {snippet!r}")
 
 
+def require_actions_pinned(path: str) -> None:
+    contents = (root / path).read_text(encoding="utf-8")
+    actions = re.findall(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", contents, re.MULTILINE)
+    if not actions:
+        raise AssertionError(f"{path} does not use any actions")
+    for action, reference in actions:
+        if not re.fullmatch(r"[0-9a-f]{40}", reference):
+            raise AssertionError(f"{path} does not pin {action} to a full commit SHA")
+
+
 require(
     ".github/workflows/ci.yml",
     [
@@ -24,8 +35,8 @@ require(
         "branches: [main]",
         "workflow_dispatch:",
         "permissions:\n  contents: read",
-        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
-        "jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730",
+        "uses: actions/checkout@",
+        "uses: jurplel/install-qt-action@",
         "modules: qtimageformats",
         "-DBUILD_TESTING=ON",
         "ctest --test-dir build/test --output-on-failure",
@@ -33,6 +44,7 @@ require(
         "cmake --build build/production",
     ],
 )
+require_actions_pinned(".github/workflows/ci.yml")
 require(
     ".github/workflows/release-linux.yml",
     [
@@ -52,6 +64,7 @@ require(
         'gh release create "$GITHUB_REF_NAME"',
     ],
 )
+require_actions_pinned(".github/workflows/release-linux.yml")
 require(
     ".github/dependabot.yml",
     [
