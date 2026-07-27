@@ -1884,9 +1884,15 @@ void captureVisibleWindow(ViewerWindow &window)
 void scheduleCapture(ViewerWindow &window, QObject &context, const bool waitUntilReady)
 {
     auto capture = std::make_shared<std::function<void()>>();
-    *capture = [&window, &context, waitUntilReady, capture] {
+    auto readyForCapture = std::make_shared<bool>(false);
+    *capture = [&window, &context, waitUntilReady, capture, readyForCapture] {
         if (waitUntilReady && window.isLoading()) {
             QTimer::singleShot(10, &context, *capture);
+            return;
+        }
+        if (waitUntilReady && !*readyForCapture) {
+            *readyForCapture = true;
+            QTimer::singleShot(0, &context, *capture);
             return;
         }
         captureVisibleWindow(window);
