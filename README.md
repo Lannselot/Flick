@@ -93,6 +93,11 @@ accessibility, Wayland/X11, GNOME, KDE, theme, and scaling release checks are
 documented in
 [`docs/linux-integration.md`](docs/linux-integration.md).
 
+Repeatable performance measurements, x86_64 AppImage/development-archive
+creation, offline verification, and the release environment matrix are
+documented in
+[`docs/performance-and-release.md`](docs/performance-and-release.md).
+
 ## License
 
 Copyright (C) 2026 Flick contributors

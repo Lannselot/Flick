@@ -19,24 +19,27 @@ endif()
 
 qt_standard_project_setup()
 
-qt_add_executable(flick
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.h
-)
+function(add_flick_executable target)
+    qt_add_executable(${target}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.h
+    )
+    target_link_libraries(${target} PRIVATE Qt6::Concurrent Qt6::Widgets)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(${target} PRIVATE Qt6::DBus)
+    endif()
+    if(TARGET PkgConfig::XCB)
+        target_link_libraries(${target} PRIVATE PkgConfig::XCB)
+        target_compile_definitions(${target} PRIVATE FLICK_HAVE_XCB_COLOR_PROFILE)
+    endif()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+endfunction()
 
-target_link_libraries(flick PRIVATE Qt6::Concurrent Qt6::Widgets)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(flick PRIVATE Qt6::DBus)
-endif()
-if(TARGET PkgConfig::XCB)
-    target_link_libraries(flick PRIVATE PkgConfig::XCB)
-    target_compile_definitions(flick PRIVATE FLICK_HAVE_XCB_COLOR_PROFILE)
-endif()
-target_compile_options(flick PRIVATE -Wall -Wextra -Wpedantic)
-
+add_flick_executable(flick)
 if(BUILD_TESTING)
-    target_compile_definitions(flick PRIVATE FLICK_ENABLE_TEST_HARNESS)
+    add_flick_executable(flick_test_driver)
+    target_compile_definitions(flick_test_driver PRIVATE FLICK_ENABLE_TEST_HARNESS)
 endif()
 
 install(TARGETS flick RUNTIME DESTINATION bin)
@@ -48,6 +51,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(
         FILES packaging/linux/org.flick.Flick.metainfo.xml
         DESTINATION share/metainfo
+    )
+    install(
+        FILES packaging/linux/org.flick.Flick.svg
+        DESTINATION share/icons/hicolor/scalable/apps
+    )
+    install(
+        FILES LICENSE
+        DESTINATION share/licenses/Flick
     )
 endif()
 

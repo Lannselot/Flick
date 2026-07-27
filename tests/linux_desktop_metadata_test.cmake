@@ -6,7 +6,7 @@ file(READ "${SOURCE_DIR}/packaging/linux/org.flick.Flick.desktop" desktop_entry)
 foreach(required
         "Type=Application"
         "Exec=flick %f"
-        "Icon=image-x-generic"
+        "Icon=org.flick.Flick"
         "MimeType=image/jpeg;image/png;image/webp;image/gif;image/bmp;"
         "Categories=Graphics;Viewer;")
     string(FIND "${desktop_entry}" "${required}" position)

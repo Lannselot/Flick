@@ -499,10 +499,26 @@ public:
         refreshDisplayColorSpace();
     }
 
+    void persistWindowGeometry()
+    {
+        QSettings settings;
+        if (restoreWindowGeometry_) {
+            settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+        } else {
+            settings.remove(QStringLiteral("window/geometry"));
+        }
+        settings.sync();
+    }
+
 #ifdef FLICK_ENABLE_TEST_HARNESS
     qsizetype cacheBytes() const
     {
         return cachedBytes_;
+    }
+
+    qsizetype decodesInFlight() const
+    {
+        return decodesInFlight_.size();
     }
 
     int decodeCount(const QString &path) const
@@ -601,17 +617,6 @@ public:
     QByteArray windowGeometryState() const
     {
         return QByteArray::number(width()) + 'x' + QByteArray::number(height());
-    }
-
-    void persistWindowGeometry()
-    {
-        QSettings settings;
-        if (restoreWindowGeometry_) {
-            settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
-        } else {
-            settings.remove(QStringLiteral("window/geometry"));
-        }
-        settings.sync();
     }
 
     void applyTestSettings(const QStringList &values)
@@ -1057,6 +1062,8 @@ private:
             showFeedback(failureMessage);
             return false;
         }
+#else
+        Q_UNUSED(failureMessage);
 #endif
         return true;
     }
@@ -1924,6 +1931,11 @@ int main(int argc, char *argv[])
             const bool captureImmediately = input.startsWith("Capture");
             if (input.startsWith("CacheBytes")) {
                 fprintf(stdout, "%lld\n", static_cast<long long>(window.cacheBytes()));
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("UiResponsiveness")) {
+                fprintf(stdout, "%d|%s\n", window.decodesInFlight() > 0 ? 1 : 0,
+                        window.uiState().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsState")) {
