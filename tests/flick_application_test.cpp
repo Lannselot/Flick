@@ -1400,14 +1400,15 @@ void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()
                                         QColor(Qt::blue), QSize(16, 12));
     QVERIFY(!incoming.isEmpty());
     RunningFlick asynchronous;
-    start(asynchronous, {path}, {}, 250);
+    start(asynchronous, {path}, {}, 500);
     waitForScreenshot(asynchronous);
     sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
     sendCommand(asynchronous, QByteArrayLiteral("Drop:") + incoming.toUtf8());
     sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
     QCOMPARE(sendQueryAndWaitForReply(asynchronous, QByteArrayLiteral("ClipboardText")),
              QFileInfo(path).canonicalFilePath().toUtf8());
-    captureAfter(asynchronous, 300);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        containsColor(captureAfter(asynchronous, 50), QColor(Qt::blue)), 5000);
     sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
     QCOMPARE(sendQueryAndWaitForReply(asynchronous, QByteArrayLiteral("ClipboardText")),
              QFileInfo(incoming).canonicalFilePath().toUtf8());
