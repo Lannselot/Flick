@@ -101,6 +101,9 @@ GitHub pull-request checks, tagged releases, repository settings, and future
 macOS CI separation are documented in [`docs/ci.md`](docs/ci.md).
 The release operator runbook is
 [`docs/releasing.md`](docs/releasing.md).
+The local source-build, staged-install, interactive smoke-test, and development
+artifact procedure is
+[`docs/manual-build-and-test.md`](docs/manual-build-and-test.md).
 
 ## License
 
