@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QDir>
+#include <QColorSpace>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
@@ -39,6 +40,8 @@ private slots:
     void technicalDetailsExpandAndF5RecoversAfterRepair();
     void extremeDimensionsRequireConfirmationBeforeBackgroundDecode();
     void rendersSupportedStaticFormatsAndTransparency();
+    void honorsEmbeddedProfilesAndDefaultsUntaggedImagesToSrgb();
+    void updatesRenderingWhenTheDisplayProfileChanges();
     void appliesExifOrientation();
     void animatedGifPreservesTimingAndFiniteLoop();
     void animatedWebpPreservesTimingAndLoops();
@@ -88,6 +91,8 @@ private:
     QString writeFixture(const QString &encodedName, const QString &imageName);
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
                               const QColor &color, QSize size = QSize(32, 24));
+    static QString writeColorManagedImage(const QTemporaryDir &directory, const QString &name,
+                                          const QColor &color, const QColorSpace &colorSpace);
     static QStringList writeStatusSequence(const QTemporaryDir &directory);
     static bool containsColor(const QImage &image, const QColor &color, int tolerance = 0);
     static QRect colorBounds(const QImage &image, const QColor &color, int tolerance = 0);
@@ -256,6 +261,17 @@ QString FlickApplicationTest::writeImage(const QTemporaryDir &directory, const Q
 {
     QImage image(size, QImage::Format_RGB32);
     image.fill(color);
+    const QString path = directory.filePath(name);
+    return image.save(path, "PNG") ? path : QString{};
+}
+
+QString FlickApplicationTest::writeColorManagedImage(const QTemporaryDir &directory,
+                                                      const QString &name, const QColor &color,
+                                                      const QColorSpace &colorSpace)
+{
+    QImage image(QSize(32, 24), QImage::Format_RGB32);
+    image.fill(color);
+    image.setColorSpace(colorSpace);
     const QString path = directory.filePath(name);
     return image.save(path, "PNG") ? path : QString{};
 }
@@ -796,6 +812,45 @@ void FlickApplicationTest::rendersSupportedStaticFormatsAndTransparency()
     QCOMPARE(purple.size(), QSize(4, 6));
     QCOMPARE(screenshot.pixelColor(purple.right() + 1, purple.top()),
              screenshot.pixelColor(purple.left() - 1, purple.top()));
+}
+
+void FlickApplicationTest::honorsEmbeddedProfilesAndDefaultsUntaggedImagesToSrgb()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString tagged =
+        writeColorManagedImage(directory, QStringLiteral("1-tagged.png"),
+                               QColor(255, 128, 0), QColorSpace(QColorSpace::DisplayP3));
+    const QString untagged =
+        writeImage(directory, QStringLiteral("2-untagged.png"), QColor(64, 128, 192));
+    QVERIFY(!tagged.isEmpty());
+    QVERIFY(!untagged.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {tagged});
+    const QImage taggedScreenshot = waitForScreenshot(flick);
+    QVERIFY(containsColor(taggedScreenshot, QColor(255, 119, 0), 2));
+    const QImage untaggedScreenshot = pressKeyAndWaitForScreenshot(flick, Qt::Key_Right);
+    QVERIFY(containsColor(untaggedScreenshot, QColor(64, 128, 192)));
+}
+
+void FlickApplicationTest::updatesRenderingWhenTheDisplayProfileChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString image =
+        writeImage(directory, QStringLiteral("gray.png"), QColor(128, 128, 128));
+    QVERIFY(!image.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {image});
+    const QImage initial = waitForScreenshot(flick);
+    QVERIFY(containsColor(initial, QColor(128, 128, 128)));
+
+    sendCommand(flick, QByteArrayLiteral("DisplayColorSpace:linear-srgb"));
+    const QImage linear = captureAfter(flick, 50);
+    QVERIFY(colorBounds(linear, QColor(128, 128, 128)).size() != QSize(32, 24));
+    QVERIFY(containsColor(linear, QColor(55, 55, 55), 1));
 }
 
 void FlickApplicationTest::appliesExifOrientation()

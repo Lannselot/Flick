@@ -4,10 +4,10 @@
 
 **Blocked by:** 05 — Supported formats, animation, and orientation.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Embedded ICC profiles are honored during rendering.
-- [ ] Images without a profile are interpreted as sRGB.
-- [ ] When an active display profile is available, displayed colors are transformed for that profile.
-- [ ] Moving the window between differently profiled displays updates rendering when the platform exposes the change.
-- [ ] Automated fixtures validate deterministic profile handling, with documented manual checks for visual correctness on profiled displays.
+- [x] Embedded ICC profiles are honored during rendering.
+- [x] Images without a profile are interpreted as sRGB.
+- [x] When an active display profile is available, displayed colors are transformed for that profile.
+- [x] Moving the window between differently profiled displays updates rendering when the platform exposes the change.
+- [x] Automated fixtures validate deterministic profile handling, with documented manual checks for visual correctness on profiled displays.

@@ -46,6 +46,13 @@ behavior. Press `Space` to pause on the current frame and press it again to
 resume. Photographs with EXIF orientation metadata are presented upright
 automatically.
 
+Embedded image color profiles are honored. Untagged images are interpreted as
+sRGB, and on X11 Flick uses the active monitor's `_ICC_PROFILE` property when
+the desktop publishes one. Moving the window to another profiled X11 monitor
+updates the rendered colors without decoding the image again. See
+[`docs/color-management.md`](docs/color-management.md) for platform limitations
+and release checks.
+
 If an image cannot be read, Flick keeps the browsing sequence available and
 shows an in-window explanation with optional technical details. Press `F5` to
 retry the current file. Images declaring more than 100 megapixels or an

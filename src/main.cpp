@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColor>
+#include <QColorSpace>
 #include <QColorDialog>
 #include <QCollator>
 #include <QComboBox>
@@ -28,6 +29,7 @@
 #include <QFileSystemWatcher>
 #include <QFormLayout>
 #include <QImageReader>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLocale>
@@ -38,6 +40,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScreen>
 #include <QSettings>
 #include <QSet>
 #include <QSpinBox>
@@ -48,15 +51,22 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWheelEvent>
+#include <QWindow>
 #include <QtEndian>
 #include <QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <functional>
 #include <limits>
 #include <memory>
+
+#ifdef FLICK_HAVE_XCB_COLOR_PROFILE
+#include <QtGui/qguiapplication_platform.h>
+#include <xcb/xcb.h>
+#endif
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
 #include <QPixmap>
@@ -245,6 +255,52 @@ AnimationMetadata animationMetadata(const QString &path)
     return {};
 }
 
+QColorSpace x11DisplayColorSpace(const QScreen *screen)
+{
+#ifdef FLICK_HAVE_XCB_COLOR_PROFILE
+    if (!screen || QGuiApplication::platformName() != QStringLiteral("xcb")) {
+        return {};
+    }
+    const auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    xcb_connection_t *connection = x11 ? x11->connection() : nullptr;
+    if (!connection) {
+        return {};
+    }
+    const xcb_setup_t *setup = xcb_get_setup(connection);
+    xcb_screen_iterator_t roots = xcb_setup_roots_iterator(setup);
+    if (!roots.data) {
+        return {};
+    }
+    const int screenIndex =
+        std::max(0, int(QGuiApplication::screens().indexOf(const_cast<QScreen *>(screen))));
+    const QByteArray propertyName =
+        screenIndex == 0 ? QByteArrayLiteral("_ICC_PROFILE")
+                         : QByteArrayLiteral("_ICC_PROFILE_") + QByteArray::number(screenIndex);
+    const xcb_intern_atom_cookie_t atomCookie =
+        xcb_intern_atom(connection, false, propertyName.size(), propertyName.constData());
+    std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> atomReply(
+        xcb_intern_atom_reply(connection, atomCookie, nullptr), &std::free);
+    if (!atomReply || atomReply->atom == XCB_ATOM_NONE) {
+        return {};
+    }
+    const xcb_get_property_cookie_t propertyCookie =
+        xcb_get_property(connection, false, roots.data->root, atomReply->atom,
+                         XCB_GET_PROPERTY_TYPE_ANY, 0, 4 * 1024 * 1024);
+    std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> propertyReply(
+        xcb_get_property_reply(connection, propertyCookie, nullptr), &std::free);
+    if (!propertyReply || propertyReply->format != 8) {
+        return {};
+    }
+    const QByteArray profile(
+        static_cast<const char *>(xcb_get_property_value(propertyReply.get())),
+        xcb_get_property_value_length(propertyReply.get()));
+    return QColorSpace::fromIccProfile(profile);
+#else
+    Q_UNUSED(screen);
+    return {};
+#endif
+}
+
 class ImageCanvas final : public QLabel
 {
 public:
@@ -338,6 +394,14 @@ public:
             setWheelAction(WheelAction::Zoom);
         });
         addImageActions();
+
+        QTimer::singleShot(0, this, [this] {
+            if (windowHandle()) {
+                QObject::connect(windowHandle(), &QWindow::screenChanged, this,
+                                 [this] { refreshDisplayColorSpace(); });
+            }
+            refreshDisplayColorSpace();
+        });
         setFocusPolicy(Qt::StrongFocus);
 
         boundaryMessage_ = new QLabel;
@@ -567,6 +631,17 @@ public:
     void failExternalActionsForTest()
     {
         failExternalActionsForTest_ = true;
+    }
+
+    void setTestDisplayColorSpace(const QString &name)
+    {
+        displayColorSpace_ =
+            name == QStringLiteral("linear-srgb")
+                ? QColorSpace(QColorSpace::SRgbLinear)
+                : QColorSpace(QColorSpace::SRgb);
+        if (!currentImage_.isNull()) {
+            showFrame(currentFrame_);
+        }
     }
 #endif
 
@@ -1334,8 +1409,27 @@ private:
 
     void showFrame(const int index)
     {
-        image_ = currentImage_.frames.at(index);
+        const QImage &source = currentImage_.frames.at(index);
+        const QColorSpace target =
+            displayColorSpace_.isValid() ? displayColorSpace_ : QColorSpace(QColorSpace::SRgb);
+        image_ = source.colorSpace() == target ? source : source.convertedToColorSpace(target);
+        image_.setColorSpace({});
         renderImage();
+    }
+
+    void refreshDisplayColorSpace()
+    {
+        const QColorSpace exposed = x11DisplayColorSpace(windowHandle() ? windowHandle()->screen()
+                                                                        : screen());
+        const QColorSpace next =
+            exposed.isValid() ? exposed : QColorSpace(QColorSpace::SRgb);
+        if (displayColorSpace_ == next) {
+            return;
+        }
+        displayColorSpace_ = next;
+        if (!currentImage_.isNull()) {
+            showFrame(currentFrame_);
+        }
     }
 
     double fitZoom() const
@@ -1580,7 +1674,11 @@ private:
                 if (frame.isNull()) {
                     break;
                 }
-                decoded.frames.append(frame);
+                QImage colorManagedFrame = frame;
+                if (!colorManagedFrame.colorSpace().isValid()) {
+                    colorManagedFrame.setColorSpace(QColorSpace(QColorSpace::SRgb));
+                }
+                decoded.frames.append(std::move(colorManagedFrame));
                 const qsizetype frameIndex = decoded.frames.size() - 1;
                 decoded.frameDelays.append(frameIndex < metadata.frameDelays.size()
                                                ? metadata.frameDelays.at(frameIndex)
@@ -1728,6 +1826,7 @@ private:
     QColor viewportBackground_{QStringLiteral("#202020")};
     bool statusVisible_ = true;
     bool restoreWindowGeometry_ = false;
+    QColorSpace displayColorSpace_{QColorSpace::SRgb};
     quint64 accessCounter_ = 0;
     QList<QAction *> imageActions_;
     QString informationText_;
@@ -1807,6 +1906,9 @@ int main(int argc, char *argv[])
                 window.applyTestSettings(
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
                 return;
+            } else if (input.startsWith("DisplayColorSpace:")) {
+                window.setTestDisplayColorSpace(
+                    QString::fromUtf8(input.mid(18).trimmed()));
             } else if (input.startsWith("Resize:")) {
                 const QList<QByteArray> size = input.mid(7).trimmed().split(':');
                 if (size.size() == 2) {

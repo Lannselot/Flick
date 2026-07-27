@@ -9,6 +9,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Concurrent DBus Widgets)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(XCB QUIET IMPORTED_TARGET xcb)
+endif()
 
 qt_standard_project_setup()
 
@@ -17,6 +21,10 @@ qt_add_executable(flick
 )
 
 target_link_libraries(flick PRIVATE Qt6::Concurrent Qt6::DBus Qt6::Widgets)
+if(TARGET PkgConfig::XCB)
+    target_link_libraries(flick PRIVATE PkgConfig::XCB)
+    target_compile_definitions(flick PRIVATE FLICK_HAVE_XCB_COLOR_PROFILE)
+endif()
 target_compile_options(flick PRIVATE -Wall -Wextra -Wpedantic)
 
 if(BUILD_TESTING)
