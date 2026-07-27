@@ -2052,6 +2052,11 @@ int main(int argc, char *argv[])
                                  Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(&window, &event);
                 delete mimeData;
+            } else if (input.startsWith("SelectZoomWheelAction")) {
+                if (auto *action =
+                        window.findChild<QAction *>(QStringLiteral("wheelZoomAction"))) {
+                    action->trigger();
+                }
             } else if (input.startsWith("ContextMenu:")) {
                 const QList<QByteArray> parts = input.trimmed().split(':');
                 if (parts.size() == 3) {
