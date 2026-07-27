@@ -15,10 +15,10 @@ dispatches. It:
 5. independently builds the non-instrumented production target with
    `BUILD_TESTING=OFF`.
 
-Configure the `main` branch ruleset in GitHub to require a pull request and the
-`CI / Linux build and test` status check. Also require the branch to be current,
-resolved conversations, and block force pushes. The workflow itself has only
-`contents: read` permission.
+The `main` branch protection in GitHub requires a pull request and the
+`Linux build and test` status check. It also requires the branch to be current,
+linear history and resolved conversations, and blocks force pushes and
+deletion. The workflow itself has only `contents: read` permission.
 
 GitHub-hosted runners need no repository secrets for CI.
 
