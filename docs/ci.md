@@ -96,9 +96,144 @@ to workflows triggered by untrusted fork code.
 
 ## Future macOS CI
 
-macOS support should use a separate `ci-macos.yml` and `packaging/macos`
-implementation. Add a non-required `macos-14` configure/build/test job first;
-make it required only after the Cocoa tests are stable. Signing and notarization
-belong in a tag-only release job protected by a GitHub Environment, with Apple
-credentials stored as environment secrets. Linux workflows must not acquire
-macOS conditionals or signing credentials.
+The implementation scope and native acceptance criteria are tracked in
+[`17-full-macos-support.md`](../.scratch/flick/issues/17-full-macos-support.md);
+the platform audit is in
+[`research/macos-support-audit.md`](research/macos-support-audit.md). macOS CI
+must use separate workflow and packaging modules:
+
+```text
+.github/workflows/ci-macos.yml
+.github/workflows/release-macos.yml
+packaging/macos/
+```
+
+Linux workflows must not acquire Cocoa branches, Apple tools, or signing
+credentials. Platform-neutral CTest behavior may be shared through CMake, but
+bundle construction and release verification stay behind the macOS packaging
+boundary.
+
+### Decisions required before enabling the workflow
+
+Record these decisions in ticket 17 before selecting runner labels or artifact
+names:
+
+1. the minimum supported macOS and Xcode versions;
+2. the Qt baseline;
+3. whether releases are one universal `arm64;x86_64` artifact or separate
+   architecture artifacts;
+4. the oldest machine on which the packaged application is verified;
+5. the Developer ID team and bundle identifier used for signing.
+
+Every job must print `sw_vers`, `uname -m`, `xcodebuild -version`, the Qt
+version, and `CMAKE_OSX_ARCHITECTURES`. Do not infer the produced architecture
+from a hosted-runner label.
+
+### Phase 1 — non-required build check
+
+Add `ci-macos.yml` for pull requests, pushes to `main`, and manual dispatches.
+Start it as a non-required check on the selected hosted macOS runner. Give it
+only `contents: read`; PR builds never receive Apple credentials.
+
+The job must:
+
+1. validate the GitHub workflows;
+2. install the pinned Qt version, including every advertised image-format
+   plugin;
+3. configure and build the instrumented driver with `BUILD_TESTING=ON`;
+4. run deterministic platform-neutral CTest cases;
+5. independently configure and build `flick` with `BUILD_TESTING=OFF`;
+6. install the application into a staging directory;
+7. verify that the result is a `Flick.app` bundle and inspect its declared
+   identifier, version, document types, executable, architectures, frameworks,
+   Cocoa platform plugin, and JPEG/PNG/GIF/BMP/WebP plugins.
+
+The production build must never contain `FLICK_ENABLE_TEST_HARNESS`. Keep
+offscreen logic tests separate from Cocoa smoke tests so a passing offscreen
+suite is not presented as native integration evidence.
+
+### Phase 2 — Cocoa smoke check
+
+After the application has a bundle, native platform services, and file-open
+handling, add a Cocoa smoke job. It must launch the installed bundle rather than
+the build-tree executable and exercise:
+
+- Finder/Open With and `QFileOpenEvent`;
+- native Open and Settings commands;
+- Finder reveal;
+- clipboard and drag-and-drop;
+- fullscreen and Spaces;
+- Retina scaling;
+- settings through the normal macOS storage backend;
+- every packaged static and animated format;
+- display-profile discovery and refresh when moving between screens.
+
+Checks involving Finder UI, Spaces, input devices, or calibrated displays may
+require a dedicated self-hosted Mac. Do not weaken them into offscreen
+assertions to make a hosted runner pass. Keep the real-device matrix from
+ticket 17 as release evidence.
+
+Make the macOS check required by `main` branch protection only when it has
+passed consistently, its deterministic suite is not quarantined, and the Cocoa
+smoke coverage represents the supported workflows. Until then it is visible
+and non-required.
+
+### Phase 3 — unsigned release candidate
+
+Add `release-macos.yml` for manual dispatches and `v*` tags. Mirror the Linux
+privilege split:
+
+- a `contents: read` job builds, tests, deploys Qt frameworks/plugins, verifies
+  the unsigned `.app`, creates the selected archive or disk image, writes
+  checksums, and uploads a workflow artifact;
+- a tag-only publish job downloads that exact artifact and performs privileged
+  release operations.
+
+The build job must fail when bundle dependencies escape the application,
+required plugins are absent, the architecture set differs from policy, or a
+test harness marker is present. An unsigned artifact is for CI inspection only
+and must not be published as a user release.
+
+### Phase 4 — signing and notarized release
+
+Create a separate GitHub Environment named `release-macos`, restricted to
+protected `v*` tags and required reviewers. Store Apple material only as
+environment secrets. Expected secret categories are:
+
+- the Developer ID Application certificate and its import password;
+- a temporary keychain password;
+- App Store Connect issuer, key identifier, and private key, or the selected
+  notarization credential alternative;
+- the Apple team identifier.
+
+The privileged job imports credentials into a temporary keychain, then:
+
+1. signs nested frameworks, plugins, and the application with hardened runtime
+   and a secure timestamp;
+2. runs strict `codesign` verification;
+3. submits the final archive for notarization and waits for success;
+4. staples the ticket;
+5. runs Gatekeeper assessment;
+6. verifies the stapled artifact on a clean machine or release-test account;
+7. creates checksums and GitHub artifact attestations;
+8. publishes only the verified artifact to the GitHub Release.
+
+Delete the temporary keychain in an `always()` cleanup step. Never print
+certificate contents, private keys, notarization responses containing
+credentials, or derived passwords. Fork-triggered workflows must have no path
+to the `release-macos` Environment.
+
+### Required evidence before claiming macOS support
+
+The macOS CI check can be required before the product is released, but CI alone
+does not establish full support. A release is eligible only when all of the
+following are retained with it:
+
+- a green deterministic CTest run;
+- a green installed-bundle Cocoa smoke run;
+- bundle dependency/plugin and architecture reports;
+- successful signing, notarization, stapling, and Gatekeeper output;
+- checksums and build provenance;
+- real-device results for the supported Intel/Apple Silicon policy, Retina,
+  mouse and trackpad, light/dark mode, fullscreen/Spaces, and single/dual
+  calibrated displays.
