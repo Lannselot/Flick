@@ -1455,10 +1455,14 @@ void FlickApplicationTest::exposesAccessibleKeyboardActions()
 
     const QByteArray accessibility =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("AccessibilityState"));
-    QVERIFY(accessibility.contains("Image viewport|Graphic|"));
+    QVERIFY(accessibility.contains("Image viewport|AccessibleRole=Graphic|"));
     QVERIFY(accessibility.contains("Open Image|Ctrl+O"));
     QVERIFY(accessibility.contains("Previous Image|Left"));
     QVERIFY(accessibility.contains("Next Image|Right"));
+    QVERIFY(accessibility.contains("Pan Left|Shift+Left"));
+    QVERIFY(accessibility.contains("Pan Right|Shift+Right"));
+    QVERIFY(accessibility.contains("Pan Up|Shift+Up"));
+    QVERIFY(accessibility.contains("Pan Down|Shift+Down"));
     QVERIFY(accessibility.contains("Fit to Window|F"));
     QVERIFY(accessibility.contains("Actual Size|1"));
     QVERIFY(accessibility.contains("Toggle Fullscreen|F11"));

@@ -3,6 +3,8 @@
 #include "platform_services.h"
 
 #include <QApplication>
+#include <QAccessible>
+#include <QAccessibleWidget>
 #include <QAction>
 #include <QActionGroup>
 #include <QClipboard>
@@ -72,6 +74,7 @@
 namespace {
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 constexpr int StatusVisibilityMilliseconds = 2000;
+constexpr int KeyboardPanStep = 40;
 constexpr qint64 LargeImagePixelLimit = 100'000'000;
 constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
 
@@ -106,6 +109,15 @@ struct DecodedImage
         return bytes;
     }
 };
+
+QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
+{
+    auto *widget = qobject_cast<QWidget *>(object);
+    if (widget && widget->objectName() == QStringLiteral("imageLabel")) {
+        return new QAccessibleWidget(widget, QAccessible::Graphic);
+    }
+    return nullptr;
+}
 
 struct AnimationMetadata
 {
@@ -567,7 +579,13 @@ public:
 
     QByteArray accessibilityState() const
     {
-        QStringList descriptions{imageLabel_->accessibleName() + QStringLiteral("|Graphic|") +
+        const QAccessibleInterface *interface =
+            QAccessible::queryAccessibleInterface(imageLabel_);
+        const QString role =
+            interface && interface->role() == QAccessible::Graphic ? QStringLiteral("Graphic")
+                                                                   : QStringLiteral("Unknown");
+        QStringList descriptions{imageLabel_->accessibleName() +
+                                 QStringLiteral("|AccessibleRole=") + role + QLatin1Char('|') +
                                  imageLabel_->accessibleDescription()};
         for (const QAction *action : viewport_->actions()) {
             if (!action->objectName().startsWith(QStringLiteral("viewer")) &&
@@ -724,7 +742,6 @@ protected:
             return;
         }
         if (event->modifiers().testFlag(Qt::ShiftModifier)) {
-            constexpr int KeyboardPanStep = 40;
             if (event->key() == Qt::Key_Left) {
                 panBy(-KeyboardPanStep, 0);
                 return;
@@ -922,64 +939,77 @@ private:
 
     void addImageActions()
     {
-        const auto addAction = [this](const QString &text, const QString &objectName,
-                                      const QKeySequence &shortcut, auto operation) {
-            auto *action = new QAction(text, this);
-            action->setObjectName(objectName);
-            action->setShortcut(shortcut);
-            action->setShortcutContext(Qt::WindowShortcut);
+        const auto addImageAction = [this](const QString &text, const QString &objectName,
+                                           const QKeySequence &shortcut, auto operation) {
+            QAction *action =
+                addViewportAction(text, objectName, shortcut, std::move(operation));
             action->setEnabled(false);
-            QObject::connect(action, &QAction::triggered, this, operation);
-            viewport_->addAction(action);
             imageActions_.append(action);
         };
-        addAction(tr("Information"), QStringLiteral("imageInformationAction"),
-                  QKeySequence(Qt::Key_I), [this] { showInformation(); });
-        addAction(tr("Copy Image"), QStringLiteral("imageCopyAction"), QKeySequence::Copy,
-                  [this] { copyRenderedImage(); });
-        addAction(tr("Copy Path"), QStringLiteral("imageCopyPathAction"),
-                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C),
-                  [this] { copyCurrentPath(); });
-        addAction(tr("Show in File Manager"), QStringLiteral("imageRevealAction"),
-                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
-                  [this] { revealCurrentFile(); });
+        addImageAction(tr("Information"), QStringLiteral("imageInformationAction"),
+                       QKeySequence(Qt::Key_I), [this] { showInformation(); });
+        addImageAction(tr("Copy Image"), QStringLiteral("imageCopyAction"), QKeySequence::Copy,
+                       [this] { copyRenderedImage(); });
+        addImageAction(tr("Copy Path"), QStringLiteral("imageCopyPathAction"),
+                       QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C),
+                       [this] { copyCurrentPath(); });
+        addImageAction(tr("Show in File Manager"), QStringLiteral("imageRevealAction"),
+                       QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
+                       [this] { revealCurrentFile(); });
     }
 
     void addViewerActions()
     {
-        const auto addAction = [this](const QString &text, const QString &objectName,
-                                      const QKeySequence &shortcut, auto operation) {
-            auto *action = new QAction(text, this);
-            action->setObjectName(objectName);
-            action->setShortcut(shortcut);
-            action->setShortcutContext(Qt::WindowShortcut);
-            QObject::connect(action, &QAction::triggered, this, operation);
-            viewport_->addAction(action);
-        };
-        addAction(tr("Open Image"), QStringLiteral("viewerOpenAction"), QKeySequence::Open,
-                  [this] { openFromFilePicker(); });
-        addAction(tr("Previous Image"), QStringLiteral("viewerPreviousAction"),
-                  QKeySequence(Qt::Key_Left), [this] { navigate(-1); });
-        addAction(tr("Next Image"), QStringLiteral("viewerNextAction"),
-                  QKeySequence(Qt::Key_Right), [this] { navigate(1); });
-        addAction(tr("Zoom In"), QStringLiteral("viewerZoomInAction"), QKeySequence::ZoomIn,
-                  [this] { setZoomCentered(zoom_ * 1.25); });
-        addAction(tr("Zoom Out"), QStringLiteral("viewerZoomOutAction"), QKeySequence::ZoomOut,
-                  [this] { setZoomCentered(zoom_ / 1.25); });
-        addAction(tr("Actual Size"), QStringLiteral("viewerActualSizeAction"),
-                  QKeySequence(Qt::Key_1), [this] { setZoomCentered(1.0); });
-        addAction(tr("Fit to Window"), QStringLiteral("viewerFitAction"),
-                  QKeySequence(Qt::Key_F), [this] { fitToViewport(); });
-        addAction(tr("Rotate Left"), QStringLiteral("viewerRotateLeftAction"),
-                  QKeySequence(Qt::Key_L), [this] { rotateView(-1); });
-        addAction(tr("Rotate Right"), QStringLiteral("viewerRotateRightAction"),
-                  QKeySequence(Qt::Key_R), [this] { rotateView(1); });
-        addAction(tr("Pause or Resume Animation"), QStringLiteral("viewerAnimationAction"),
-                  QKeySequence(Qt::Key_Space), [this] { toggleAnimation(); });
-        addAction(tr("Toggle Fullscreen"), QStringLiteral("viewerFullscreenAction"),
-                  QKeySequence(Qt::Key_F11), [this] { toggleFullscreen(); });
-        addAction(tr("Retry"), QStringLiteral("viewerRetryAction"), QKeySequence(Qt::Key_F5),
-                  [this] { retryCurrentImage(); });
+        addViewportAction(tr("Open Image"), QStringLiteral("viewerOpenAction"),
+                          QKeySequence::Open, [this] { openFromFilePicker(); });
+        addViewportAction(tr("Previous Image"), QStringLiteral("viewerPreviousAction"),
+                          QKeySequence(Qt::Key_Left), [this] { navigate(-1); });
+        addViewportAction(tr("Next Image"), QStringLiteral("viewerNextAction"),
+                          QKeySequence(Qt::Key_Right), [this] { navigate(1); });
+        addViewportAction(tr("Pan Left"), QStringLiteral("viewerPanLeftAction"),
+                          QKeySequence(Qt::SHIFT | Qt::Key_Left),
+                          [this] { panBy(-KeyboardPanStep, 0); });
+        addViewportAction(tr("Pan Right"), QStringLiteral("viewerPanRightAction"),
+                          QKeySequence(Qt::SHIFT | Qt::Key_Right),
+                          [this] { panBy(KeyboardPanStep, 0); });
+        addViewportAction(tr("Pan Up"), QStringLiteral("viewerPanUpAction"),
+                          QKeySequence(Qt::SHIFT | Qt::Key_Up),
+                          [this] { panBy(0, -KeyboardPanStep); });
+        addViewportAction(tr("Pan Down"), QStringLiteral("viewerPanDownAction"),
+                          QKeySequence(Qt::SHIFT | Qt::Key_Down),
+                          [this] { panBy(0, KeyboardPanStep); });
+        addViewportAction(tr("Zoom In"), QStringLiteral("viewerZoomInAction"),
+                          QKeySequence::ZoomIn, [this] { setZoomCentered(zoom_ * 1.25); });
+        addViewportAction(tr("Zoom Out"), QStringLiteral("viewerZoomOutAction"),
+                          QKeySequence::ZoomOut, [this] { setZoomCentered(zoom_ / 1.25); });
+        addViewportAction(tr("Actual Size"), QStringLiteral("viewerActualSizeAction"),
+                          QKeySequence(Qt::Key_1), [this] { setZoomCentered(1.0); });
+        addViewportAction(tr("Fit to Window"), QStringLiteral("viewerFitAction"),
+                          QKeySequence(Qt::Key_F), [this] { fitToViewport(); });
+        addViewportAction(tr("Rotate Left"), QStringLiteral("viewerRotateLeftAction"),
+                          QKeySequence(Qt::Key_L), [this] { rotateView(-1); });
+        addViewportAction(tr("Rotate Right"), QStringLiteral("viewerRotateRightAction"),
+                          QKeySequence(Qt::Key_R), [this] { rotateView(1); });
+        addViewportAction(tr("Pause or Resume Animation"),
+                          QStringLiteral("viewerAnimationAction"), QKeySequence(Qt::Key_Space),
+                          [this] { toggleAnimation(); });
+        addViewportAction(tr("Toggle Fullscreen"), QStringLiteral("viewerFullscreenAction"),
+                          QKeySequence(Qt::Key_F11), [this] { toggleFullscreen(); });
+        addViewportAction(tr("Retry"), QStringLiteral("viewerRetryAction"),
+                          QKeySequence(Qt::Key_F5), [this] { retryCurrentImage(); });
+    }
+
+    QAction *addViewportAction(const QString &text, const QString &objectName,
+                               const QKeySequence &shortcut,
+                               std::function<void()> operation)
+    {
+        auto *action = new QAction(text, this);
+        action->setObjectName(objectName);
+        action->setShortcut(shortcut);
+        action->setShortcutContext(Qt::WindowShortcut);
+        QObject::connect(action, &QAction::triggered, this, std::move(operation));
+        viewport_->addAction(action);
+        return action;
     }
 
     QString imageInformation() const
@@ -1862,6 +1892,7 @@ void scheduleCapture(ViewerWindow &window, QObject &context, const bool waitUnti
 int main(int argc, char *argv[])
 {
     QApplication application(argc, argv);
+    QAccessible::installFactory(flickAccessibleInterface);
     QApplication::setApplicationName(QStringLiteral("Flick"));
     QApplication::setApplicationDisplayName(QStringLiteral("Flick"));
     QApplication::setDesktopFileName(QStringLiteral("org.flick.Flick"));
