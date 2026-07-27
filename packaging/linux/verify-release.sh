@@ -7,6 +7,9 @@ if [[ $# -ne 1 || ! -x "$1" ]]; then
     exit 2
 fi
 
+source_dir=$(realpath "$(dirname "$0")/../..")
+source "$source_dir/packaging/linux/network-trace.sh"
+
 appimage=$(realpath "$1")
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
@@ -27,7 +30,7 @@ if command -v strace >/dev/null; then
         echo "AppImage failed its launch smoke test" >&2
         exit 1
     fi
-    if [[ -s "$work_dir/network.log" ]]; then
+    if contains_network_syscall "$work_dir/network.log"; then
         echo "AppImage attempted a network syscall:" >&2
         cat "$work_dir/network.log" >&2
         exit 1
