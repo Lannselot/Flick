@@ -1,0 +1,145 @@
+name: Release Linux
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Linux artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          version: "6.5.*"
+          cache: true
+          setup-python: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            file \
+            libgl1-mesa-dev \
+            libxcb1-dev \
+            ninja-build \
+            pkg-config \
+            strace
+
+      - name: Verify tag matches project version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(sed -n 's/^project(Flick VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          test "$GITHUB_REF_NAME" = "v$version"
+
+      - name: Configure test driver
+        run: >
+          cmake -S . -B build/test -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+
+      - name: Build test driver
+        run: cmake --build build/test
+
+      - name: Run tests
+        run: ctest --test-dir build/test --output-on-failure
+
+      - name: Configure production binary
+        run: >
+          cmake -S . -B build/production -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+
+      - name: Build production binary
+        run: cmake --build build/production
+
+      - name: Install verified AppImage tools
+        env:
+          LINUXDEPLOY_SHA256: e87ee0815d109282fdda73e34c2361d64d02b0ffaea3674b18f1fd1f6a687dcf
+          QT_PLUGIN_SHA256: be1b7e166bf9975cfb694ebe6759ba40502ffc6196440d3e64aa90c4dbd67e9f
+        run: |
+          mkdir -p "$RUNNER_TEMP/appimage-tools"
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/appimage-tools/linuxdeploy" \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/appimage-tools/linuxdeploy-plugin-qt" \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          echo "$LINUXDEPLOY_SHA256  $RUNNER_TEMP/appimage-tools/linuxdeploy" \
+            | sha256sum --check --strict
+          echo "$QT_PLUGIN_SHA256  $RUNNER_TEMP/appimage-tools/linuxdeploy-plugin-qt" \
+            | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/appimage-tools/linuxdeploy" \
+            "$RUNNER_TEMP/appimage-tools/linuxdeploy-plugin-qt"
+          echo "$RUNNER_TEMP/appimage-tools" >> "$GITHUB_PATH"
+
+      - name: Build and verify release artifacts
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          LINUXDEPLOY: ${{ runner.temp }}/appimage-tools/linuxdeploy
+        run: packaging/linux/build-release.sh build/production dist
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum Flick-* > SHA256SUMS
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: flick-linux-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Attest and publish Linux release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download verified build output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: flick-linux-${{ github.ref_name }}
+          path: dist
+
+      - name: Attest release artifacts
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            dist/Flick-*
+            dist/SHA256SUMS
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "Flick $GITHUB_REF_NAME"

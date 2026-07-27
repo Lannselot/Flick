@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          version: "6.5.*"
+          cache: true
+          setup-python: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl1-mesa-dev \
+            libxcb1-dev \
+            ninja-build \
+            pkg-config \
+            strace
+
+      - name: Validate GitHub workflows
+        run: scripts/validate-github-actions.sh
+
+      - name: Configure test driver
+        run: >
+          cmake -S . -B build/test -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+
+      - name: Build test driver
+        run: cmake --build build/test
+
+      - name: Run tests
+        run: ctest --test-dir build/test --output-on-failure
+
+      - name: Configure production binary
+        run: >
+          cmake -S . -B build/production -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+
+      - name: Build production binary
+        run: cmake --build build/production

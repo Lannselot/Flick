@@ -97,6 +97,8 @@ Repeatable performance measurements, x86_64 AppImage/development-archive
 creation, offline verification, and the release environment matrix are
 documented in
 [`docs/performance-and-release.md`](docs/performance-and-release.md).
+GitHub pull-request checks, tagged releases, repository settings, and future
+macOS CI separation are documented in [`docs/ci.md`](docs/ci.md).
 
 ## License
 

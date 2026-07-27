@@ -1,4 +1,5 @@
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui Test)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 qt_add_executable(flick_application_test
     ${CMAKE_CURRENT_SOURCE_DIR}/flick_application_test.cpp
@@ -25,6 +26,13 @@ add_test(NAME flick.performance-smoke COMMAND flick_performance --smoke)
 set_tests_properties(flick.performance-smoke PROPERTIES
     ENVIRONMENT "FLICK_EXECUTABLE=$<TARGET_FILE:flick_test_driver>;QT_QPA_PLATFORM=offscreen"
     TIMEOUT 30
+)
+
+add_test(
+    NAME flick.github-workflows
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/github_workflows_test.py
+        ${PROJECT_SOURCE_DIR}
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
