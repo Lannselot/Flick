@@ -88,11 +88,10 @@ private:
     QImage sendCommandAndWaitForScreenshot(RunningFlick &flick, const QByteArray &command);
     QImage captureAfter(RunningFlick &flick, int delayMilliseconds);
     QByteArray sendQueryAndWaitForReply(RunningFlick &flick, const QByteArray &command);
-    QString writeFixture(const QString &encodedName, const QString &imageName);
+    QString writeFixture(const QString &encodedName, const QString &imageName,
+                         const QString &directory = {});
     static QString writeImage(const QTemporaryDir &directory, const QString &name,
                               const QColor &color, QSize size = QSize(32, 24));
-    static QString writeColorManagedImage(const QTemporaryDir &directory, const QString &name,
-                                          const QColor &color, const QColorSpace &colorSpace);
     static QStringList writeStatusSequence(const QTemporaryDir &directory);
     static bool containsColor(const QImage &image, const QColor &color, int tolerance = 0);
     static QRect colorBounds(const QImage &image, const QColor &color, int tolerance = 0);
@@ -109,14 +108,16 @@ void FlickApplicationTest::initTestCase()
     QVERIFY(fixtures_.isValid());
 }
 
-QString FlickApplicationTest::writeFixture(const QString &encodedName, const QString &imageName)
+QString FlickApplicationTest::writeFixture(const QString &encodedName, const QString &imageName,
+                                           const QString &directory)
 {
     QFile encoded(QStringLiteral(FLICK_FIXTURE_DIR "/") + encodedName);
     if (!encoded.open(QIODevice::ReadOnly)) {
         return {};
     }
     const QByteArray fixture = QByteArray::fromBase64(encoded.readAll());
-    const QString path = fixtures_.filePath(imageName);
+    const QString path =
+        directory.isEmpty() ? fixtures_.filePath(imageName) : QDir(directory).filePath(imageName);
     QFile image(path);
     if (!image.open(QIODevice::WriteOnly) || image.write(fixture) != fixture.size()) {
         return {};
@@ -261,17 +262,6 @@ QString FlickApplicationTest::writeImage(const QTemporaryDir &directory, const Q
 {
     QImage image(size, QImage::Format_RGB32);
     image.fill(color);
-    const QString path = directory.filePath(name);
-    return image.save(path, "PNG") ? path : QString{};
-}
-
-QString FlickApplicationTest::writeColorManagedImage(const QTemporaryDir &directory,
-                                                      const QString &name, const QColor &color,
-                                                      const QColorSpace &colorSpace)
-{
-    QImage image(QSize(32, 24), QImage::Format_RGB32);
-    image.fill(color);
-    image.setColorSpace(colorSpace);
     const QString path = directory.filePath(name);
     return image.save(path, "PNG") ? path : QString{};
 }
@@ -819,8 +809,8 @@ void FlickApplicationTest::honorsEmbeddedProfilesAndDefaultsUntaggedImagesToSrgb
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString tagged =
-        writeColorManagedImage(directory, QStringLiteral("1-tagged.png"),
-                               QColor(255, 128, 0), QColorSpace(QColorSpace::DisplayP3));
+        writeFixture(QStringLiteral("tagged-display-p3.png.base64"),
+                     QStringLiteral("1-tagged.png"), directory.path());
     const QString untagged =
         writeImage(directory, QStringLiteral("2-untagged.png"), QColor(64, 128, 192));
     QVERIFY(!tagged.isEmpty());
@@ -840,14 +830,18 @@ void FlickApplicationTest::updatesRenderingWhenTheDisplayProfileChanges()
     QVERIFY(directory.isValid());
     const QString image =
         writeImage(directory, QStringLiteral("gray.png"), QColor(128, 128, 128));
+    const QString profile =
+        writeFixture(QStringLiteral("linear-srgb.icc.base64"),
+                     QStringLiteral("linear-srgb.icc"), directory.path());
     QVERIFY(!image.isEmpty());
+    QVERIFY(!profile.isEmpty());
 
     RunningFlick flick;
     start(flick, {image});
     const QImage initial = waitForScreenshot(flick);
     QVERIFY(containsColor(initial, QColor(128, 128, 128)));
 
-    sendCommand(flick, QByteArrayLiteral("DisplayColorSpace:linear-srgb"));
+    sendCommand(flick, QByteArrayLiteral("DisplayIccProfile:") + profile.toUtf8());
     const QImage linear = captureAfter(flick, 50);
     QVERIFY(colorBounds(linear, QColor(128, 128, 128)).size() != QSize(32, 24));
     QVERIFY(containsColor(linear, QColor(55, 55, 55), 1));

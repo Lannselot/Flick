@@ -15,6 +15,7 @@
 #include <QCursor>
 #include <QDateTime>
 #include <QDBusInterface>
+#include <QDBusObjectPath>
 #include <QDBusReply>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -299,6 +300,46 @@ QColorSpace x11DisplayColorSpace(const QScreen *screen)
     Q_UNUSED(screen);
     return {};
 #endif
+}
+
+QColorSpace colorSpaceFromIccFile(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return QColorSpace::fromIccProfile(file.read(16 * 1024 * 1024));
+}
+
+QColorSpace colordDisplayColorSpace(const QScreen *screen)
+{
+    if (!screen || screen->name().isEmpty()) {
+        return {};
+    }
+    QDBusInterface manager(QStringLiteral("org.freedesktop.ColorManager"),
+                           QStringLiteral("/org/freedesktop/ColorManager"),
+                           QStringLiteral("org.freedesktop.ColorManager"));
+    const QDBusReply<QDBusObjectPath> device =
+        manager.call(QStringLiteral("FindDeviceByProperty"),
+                     QStringLiteral("OutputName"), screen->name());
+    if (!device.isValid() || device.value().path().isEmpty()) {
+        return {};
+    }
+    QDBusInterface deviceInterface(QStringLiteral("org.freedesktop.ColorManager"),
+                                   device.value().path(),
+                                   QStringLiteral("org.freedesktop.ColorManager.Device"));
+    const QDBusReply<QDBusObjectPath> profile =
+        deviceInterface.call(QStringLiteral("GetProfileForQualifiers"),
+                             QStringList{QStringLiteral("ColorSpace.RGB."),
+                                         QStringLiteral("MediaType.Display."),
+                                         QString{}});
+    if (!profile.isValid() || profile.value().path().isEmpty()) {
+        return {};
+    }
+    QDBusInterface profileInterface(QStringLiteral("org.freedesktop.ColorManager"),
+                                    profile.value().path(),
+                                    QStringLiteral("org.freedesktop.ColorManager.Profile"));
+    return colorSpaceFromIccFile(profileInterface.property("Filename").toString());
 }
 
 class ImageCanvas final : public QLabel
@@ -633,15 +674,9 @@ public:
         failExternalActionsForTest_ = true;
     }
 
-    void setTestDisplayColorSpace(const QString &name)
+    void setTestDisplayIccProfile(const QString &path)
     {
-        displayColorSpace_ =
-            name == QStringLiteral("linear-srgb")
-                ? QColorSpace(QColorSpace::SRgbLinear)
-                : QColorSpace(QColorSpace::SRgb);
-        if (!currentImage_.isNull()) {
-            showFrame(currentFrame_);
-        }
+        applyDisplayColorSpace(colorSpaceFromIccFile(path));
     }
 #endif
 
@@ -1419,10 +1454,17 @@ private:
 
     void refreshDisplayColorSpace()
     {
-        const QColorSpace exposed = x11DisplayColorSpace(windowHandle() ? windowHandle()->screen()
-                                                                        : screen());
-        const QColorSpace next =
-            exposed.isValid() ? exposed : QColorSpace(QColorSpace::SRgb);
+        QScreen *activeScreen = windowHandle() ? windowHandle()->screen() : screen();
+        QColorSpace exposed = x11DisplayColorSpace(activeScreen);
+        if (!exposed.isValid()) {
+            exposed = colordDisplayColorSpace(activeScreen);
+        }
+        applyDisplayColorSpace(exposed);
+    }
+
+    void applyDisplayColorSpace(const QColorSpace &exposed)
+    {
+        const QColorSpace next = exposed.isValid() ? exposed : QColorSpace(QColorSpace::SRgb);
         if (displayColorSpace_ == next) {
             return;
         }
@@ -1906,8 +1948,8 @@ int main(int argc, char *argv[])
                 window.applyTestSettings(
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
                 return;
-            } else if (input.startsWith("DisplayColorSpace:")) {
-                window.setTestDisplayColorSpace(
+            } else if (input.startsWith("DisplayIccProfile:")) {
+                window.setTestDisplayIccProfile(
                     QString::fromUtf8(input.mid(18).trimmed()));
             } else if (input.startsWith("Resize:")) {
                 const QList<QByteArray> size = input.mid(7).trimmed().split(':');

@@ -6,10 +6,11 @@ frame into the active display profile. Source frames remain unchanged in the
 decode cache, which keeps profile changes deterministic and avoids cumulative
 conversion error.
 
-On X11, Flick reads the conventional `_ICC_PROFILE` and `_ICC_PROFILE_n`
+Flick queries colord for the profile associated with the active Qt screen. On
+X11 it first reads the conventional `_ICC_PROFILE` and `_ICC_PROFILE_n`
 properties when the XCB development library was available at build time. It
 updates the current frame when Qt reports that the window moved to another
-screen. Platforms that do not expose a display profile through this interface
+screen. Platforms that do not expose a display profile through either interface
 use sRGB output.
 
 ## Manual release checks

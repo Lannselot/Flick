@@ -47,9 +47,9 @@ resume. Photographs with EXIF orientation metadata are presented upright
 automatically.
 
 Embedded image color profiles are honored. Untagged images are interpreted as
-sRGB, and on X11 Flick uses the active monitor's `_ICC_PROFILE` property when
-the desktop publishes one. Moving the window to another profiled X11 monitor
-updates the rendered colors without decoding the image again. See
+sRGB. Flick uses colord on supported Wayland desktops and the active monitor's
+`_ICC_PROFILE` property on X11 when the desktop publishes one. Moving the window
+to another profiled monitor updates the rendered colors without decoding the image again. See
 [`docs/color-management.md`](docs/color-management.md) for platform limitations
 and release checks.
 
