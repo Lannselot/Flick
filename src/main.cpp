@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "platform_services.h"
+
 #include <QApplication>
 #include <QAction>
 #include <QActionGroup>
@@ -14,9 +16,6 @@
 #include <QContextMenuEvent>
 #include <QCursor>
 #include <QDateTime>
-#include <QDBusInterface>
-#include <QDBusObjectPath>
-#include <QDBusReply>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFutureWatcher>
@@ -30,7 +29,6 @@
 #include <QFileSystemWatcher>
 #include <QFormLayout>
 #include <QImageReader>
-#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLocale>
@@ -58,16 +56,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstdio>
 #include <functional>
 #include <limits>
 #include <memory>
-
-#ifdef FLICK_HAVE_XCB_COLOR_PROFILE
-#include <QtGui/qguiapplication_platform.h>
-#include <xcb/xcb.h>
-#endif
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
 #include <QPixmap>
@@ -256,92 +248,6 @@ AnimationMetadata animationMetadata(const QString &path)
     return {};
 }
 
-QColorSpace x11DisplayColorSpace(const QScreen *screen)
-{
-#ifdef FLICK_HAVE_XCB_COLOR_PROFILE
-    if (!screen || QGuiApplication::platformName() != QStringLiteral("xcb")) {
-        return {};
-    }
-    const auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
-    xcb_connection_t *connection = x11 ? x11->connection() : nullptr;
-    if (!connection) {
-        return {};
-    }
-    const xcb_setup_t *setup = xcb_get_setup(connection);
-    xcb_screen_iterator_t roots = xcb_setup_roots_iterator(setup);
-    if (!roots.data) {
-        return {};
-    }
-    const int screenIndex =
-        std::max(0, int(QGuiApplication::screens().indexOf(const_cast<QScreen *>(screen))));
-    const QByteArray propertyName =
-        screenIndex == 0 ? QByteArrayLiteral("_ICC_PROFILE")
-                         : QByteArrayLiteral("_ICC_PROFILE_") + QByteArray::number(screenIndex);
-    const xcb_intern_atom_cookie_t atomCookie =
-        xcb_intern_atom(connection, false, propertyName.size(), propertyName.constData());
-    std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> atomReply(
-        xcb_intern_atom_reply(connection, atomCookie, nullptr), &std::free);
-    if (!atomReply || atomReply->atom == XCB_ATOM_NONE) {
-        return {};
-    }
-    const xcb_get_property_cookie_t propertyCookie =
-        xcb_get_property(connection, false, roots.data->root, atomReply->atom,
-                         XCB_GET_PROPERTY_TYPE_ANY, 0, 4 * 1024 * 1024);
-    std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> propertyReply(
-        xcb_get_property_reply(connection, propertyCookie, nullptr), &std::free);
-    if (!propertyReply || propertyReply->format != 8) {
-        return {};
-    }
-    const QByteArray profile(
-        static_cast<const char *>(xcb_get_property_value(propertyReply.get())),
-        xcb_get_property_value_length(propertyReply.get()));
-    return QColorSpace::fromIccProfile(profile);
-#else
-    Q_UNUSED(screen);
-    return {};
-#endif
-}
-
-QColorSpace colorSpaceFromIccFile(const QString &path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    return QColorSpace::fromIccProfile(file.read(16 * 1024 * 1024));
-}
-
-QColorSpace colordDisplayColorSpace(const QScreen *screen)
-{
-    if (!screen || screen->name().isEmpty()) {
-        return {};
-    }
-    QDBusInterface manager(QStringLiteral("org.freedesktop.ColorManager"),
-                           QStringLiteral("/org/freedesktop/ColorManager"),
-                           QStringLiteral("org.freedesktop.ColorManager"));
-    const QDBusReply<QDBusObjectPath> device =
-        manager.call(QStringLiteral("FindDeviceByProperty"),
-                     QStringLiteral("OutputName"), screen->name());
-    if (!device.isValid() || device.value().path().isEmpty()) {
-        return {};
-    }
-    QDBusInterface deviceInterface(QStringLiteral("org.freedesktop.ColorManager"),
-                                   device.value().path(),
-                                   QStringLiteral("org.freedesktop.ColorManager.Device"));
-    const QDBusReply<QDBusObjectPath> profile =
-        deviceInterface.call(QStringLiteral("GetProfileForQualifiers"),
-                             QStringList{QStringLiteral("ColorSpace.RGB."),
-                                         QStringLiteral("MediaType.Display."),
-                                         QString{}});
-    if (!profile.isValid() || profile.value().path().isEmpty()) {
-        return {};
-    }
-    QDBusInterface profileInterface(QStringLiteral("org.freedesktop.ColorManager"),
-                                    profile.value().path(),
-                                    QStringLiteral("org.freedesktop.ColorManager.Profile"));
-    return colorSpaceFromIccFile(profileInterface.property("Filename").toString());
-}
-
 class ImageCanvas final : public QLabel
 {
 public:
@@ -386,7 +292,8 @@ private:
 class ViewerWindow final : public QWidget
 {
 public:
-    explicit ViewerWindow(const QString &imagePath)
+    ViewerWindow(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices)
+        : platformServices_(std::move(platformServices))
     {
         setWindowTitle(QStringLiteral("Flick"));
         setMinimumSize(480, 320);
@@ -439,9 +346,9 @@ public:
         QTimer::singleShot(0, this, [this] {
             if (windowHandle()) {
                 QObject::connect(windowHandle(), &QWindow::screenChanged, this,
-                                 [this] { refreshDisplayColorSpace(); });
+                                 [this] { displayConfigurationChanged(); });
             }
-            refreshDisplayColorSpace();
+            displayConfigurationChanged();
         });
         setFocusPolicy(Qt::StrongFocus);
 
@@ -541,7 +448,7 @@ public:
 
         auto *settingsAction = new QAction(tr("Settings"), this);
         settingsAction->setObjectName(QStringLiteral("settingsAction"));
-        settingsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+        settingsAction->setShortcut(QKeySequence::Preferences);
         settingsAction->setShortcutContext(Qt::WindowShortcut);
         QObject::connect(settingsAction, &QAction::triggered, this, [this] {
             showSettings();
@@ -557,6 +464,11 @@ public:
     bool isLoading() const
     {
         return decodesInFlight_.contains(requestedPath_);
+    }
+
+    void displayConfigurationChanged()
+    {
+        refreshDisplayColorSpace();
     }
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -614,11 +526,6 @@ public:
                QByteArray::number(pendingLargeImageSize_.height());
     }
 
-    QByteArray revealedPath() const
-    {
-        return revealedPath_.toUtf8();
-    }
-
     QByteArray contextActions() const
     {
         QStringList descriptions;
@@ -674,11 +581,6 @@ public:
         failExternalActionsForTest_ = true;
     }
 
-    void simulateDisplayProfileChange(const QString &path)
-    {
-        testDisplayIccProfilePath_ = path;
-        refreshDisplayColorSpace();
-    }
 #endif
 
 protected:
@@ -762,17 +664,15 @@ protected:
             leaveFullscreen();
             return;
         }
-        if (event->key() == Qt::Key_O && event->modifiers().testFlag(Qt::ControlModifier)) {
+        if (event->matches(QKeySequence::Open)) {
             openFromFilePicker();
             return;
         }
-        if (event->modifiers().testFlag(Qt::ControlModifier) &&
-            (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal)) {
+        if (event->matches(QKeySequence::ZoomIn)) {
             setZoomCentered(zoom_ * 1.25);
             return;
         }
-        if (event->modifiers().testFlag(Qt::ControlModifier) &&
-            event->key() == Qt::Key_Minus) {
+        if (event->matches(QKeySequence::ZoomOut)) {
             setZoomCentered(zoom_ / 1.25);
             return;
         }
@@ -1104,21 +1004,10 @@ private:
             !externalActionCanRun(tr("Could not show the current file in the file manager"))) {
             return;
         }
-        const QFileInfo file(currentImage_.path);
-#ifdef FLICK_ENABLE_TEST_HARNESS
-        revealedPath_ = file.absoluteFilePath();
-#else
-        QDBusInterface fileManager(QStringLiteral("org.freedesktop.FileManager1"),
-                                   QStringLiteral("/org/freedesktop/FileManager1"),
-                                   QStringLiteral("org.freedesktop.FileManager1"));
-        const QDBusReply<void> reply =
-            fileManager.call(QStringLiteral("ShowItems"),
-                             QStringList{QUrl::fromLocalFile(file.absoluteFilePath()).toString()},
-                             QString{});
-        if (!reply.isValid()) {
+        if (!platformServices_->revealFile(
+                QFileInfo(currentImage_.path).absoluteFilePath())) {
             showFeedback(tr("Could not show the current file in the file manager"));
         }
-#endif
     }
 
     void setWheelAction(const WheelAction action)
@@ -1456,19 +1345,7 @@ private:
     void refreshDisplayColorSpace()
     {
         QScreen *activeScreen = windowHandle() ? windowHandle()->screen() : screen();
-        QColorSpace exposed;
-#ifdef FLICK_ENABLE_TEST_HARNESS
-        if (!testDisplayIccProfilePath_.isEmpty()) {
-            exposed = colorSpaceFromIccFile(testDisplayIccProfilePath_);
-        }
-#endif
-        if (!exposed.isValid()) {
-            exposed = x11DisplayColorSpace(activeScreen);
-        }
-        if (!exposed.isValid()) {
-            exposed = colordDisplayColorSpace(activeScreen);
-        }
-        applyDisplayColorSpace(exposed);
+        applyDisplayColorSpace(platformServices_->displayColorSpace(activeScreen));
     }
 
     void applyDisplayColorSpace(const QColorSpace &exposed)
@@ -1838,6 +1715,7 @@ private:
     }
 
     QImage image_;
+    std::unique_ptr<PlatformServices> platformServices_;
     ImageCanvas *imageLabel_ = nullptr;
     QScrollArea *viewport_ = nullptr;
     QLabel *boundaryMessage_ = nullptr;
@@ -1883,9 +1761,7 @@ private:
     QString informationText_;
 #ifdef FLICK_ENABLE_TEST_HARNESS
     QHash<QString, int> decodeCounts_;
-    QString revealedPath_;
     bool failExternalActionsForTest_ = false;
-    QString testDisplayIccProfilePath_;
 #endif
 };
 
@@ -1922,14 +1798,21 @@ int main(int argc, char *argv[])
 
     const QStringList arguments = application.arguments();
     const QString imagePath = arguments.size() > 1 ? arguments.at(1) : QString{};
-    ViewerWindow window(imagePath);
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    auto platformServices = std::make_unique<TestPlatformServices>();
+    TestPlatformServices *testPlatformServices = platformServices.get();
+#else
+    auto platformServices = createPlatformServices();
+#endif
+    ViewerWindow window(imagePath, std::move(platformServices));
     window.show();
     window.setFocus();
 #ifdef FLICK_ENABLE_TEST_HARNESS
     scheduleCapture(window, application, true);
     QSocketNotifier testCommands(STDIN_FILENO, QSocketNotifier::Read, &application);
     QObject::connect(
-        &testCommands, &QSocketNotifier::activated, &application, [&application, &window] {
+        &testCommands, &QSocketNotifier::activated, &application,
+        [&application, &window, testPlatformServices] {
             char command[4096] = {};
             const auto bytesRead = ::read(STDIN_FILENO, command, sizeof(command));
             if (bytesRead <= 0) {
@@ -1959,8 +1842,9 @@ int main(int argc, char *argv[])
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
                 return;
             } else if (input.startsWith("DisplayProfileChanged:")) {
-                window.simulateDisplayProfileChange(
+                testPlatformServices->setDisplayIccProfile(
                     QString::fromUtf8(input.mid(22).trimmed()));
+                window.displayConfigurationChanged();
             } else if (input.startsWith("Resize:")) {
                 const QList<QByteArray> size = input.mid(7).trimmed().split(':');
                 if (size.size() == 2) {
@@ -1997,7 +1881,8 @@ int main(int argc, char *argv[])
                 fflush(stdout);
                 return;
             } else if (input.startsWith("RevealedPath")) {
-                fprintf(stdout, "%s\n", window.revealedPath().constData());
+                fprintf(stdout, "%s\n",
+                        testPlatformServices->revealedPath().toUtf8().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("Feedback")) {
