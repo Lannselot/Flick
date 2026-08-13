@@ -9,6 +9,7 @@ conversion error.
 Flick queries colord for the profile associated with the active Qt screen. On
 X11 it first reads the conventional `_ICC_PROFILE` and `_ICC_PROFILE_n`
 properties when the XCB development library was available at build time. It
+uses the active `NSScreen` ICC profile through AppKit on macOS. It
 updates the current frame when Qt reports that the window moved to another
 screen. Platforms that do not expose a display profile through either interface
 use sRGB output.

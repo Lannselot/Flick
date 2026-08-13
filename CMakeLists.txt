@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.21.1)
 
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum supported macOS version")
+    if(NOT CMAKE_OSX_ARCHITECTURES)
+        set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS release architectures")
+    endif()
+endif()
+
 project(Flick VERSION 0.1.0 LANGUAGES CXX)
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 include(CTest)
 
@@ -20,12 +30,25 @@ endif()
 qt_standard_project_setup()
 
 function(add_flick_executable target)
-    qt_add_executable(${target}
+    set(options)
+    if(APPLE AND target STREQUAL "flick")
+        list(APPEND options MACOSX_BUNDLE)
+    endif()
+    qt_add_executable(${target} ${options}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.h
     )
     target_link_libraries(${target} PRIVATE Qt6::Concurrent Qt6::Widgets)
+    target_compile_definitions(${target} PRIVATE FLICK_VERSION="${PROJECT_VERSION}")
+    if(APPLE)
+        target_sources(${target} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services_macos.mm
+        )
+        target_link_libraries(${target} PRIVATE "-framework AppKit")
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_libraries(${target} PRIVATE Qt6::DBus)
     endif()
@@ -37,12 +60,38 @@ function(add_flick_executable target)
 endfunction()
 
 add_flick_executable(flick)
+if(APPLE)
+    set_source_files_properties(packaging/macos/Flick.icns PROPERTIES
+        MACOSX_PACKAGE_LOCATION Resources
+    )
+    target_sources(flick PRIVATE packaging/macos/Flick.icns)
+    set_target_properties(flick PROPERTIES
+        OUTPUT_NAME Flick
+        MACOSX_BUNDLE_BUNDLE_NAME Flick
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.flick.Flick
+        MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/Info.plist.in
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
+        XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME YES
+    )
+endif()
 if(BUILD_TESTING)
     add_flick_executable(flick_test_driver)
     target_compile_definitions(flick_test_driver PRIVATE FLICK_ENABLE_TEST_HARNESS)
 endif()
 
-install(TARGETS flick RUNTIME DESTINATION bin)
+if(APPLE)
+    install(TARGETS flick BUNDLE DESTINATION .)
+    qt_generate_deploy_app_script(
+        TARGET flick
+        OUTPUT_SCRIPT flick_deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${flick_deploy_script})
+else()
+    install(TARGETS flick RUNTIME DESTINATION bin)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(
         FILES packaging/linux/org.flick.Flick.desktop

@@ -1,10 +1,10 @@
 # Flick
 
-Flick is a minimal Qt 6 image viewer for Linux.
+Flick is a minimal, color-managed Qt 6 image viewer for Linux and macOS.
 
 ## Build
 
-Flick requires a C++20 compiler, CMake 3.21 or newer, and Qt 6.5 or newer with
+Flick requires a C++20 compiler, CMake 3.21.1 or newer, and Qt 6.5 or newer with
 the Widgets component.
 
 ```sh
@@ -16,11 +16,11 @@ Open a JPEG, PNG, WebP, GIF, or BMP by passing its path, or launch without a
 path for the empty state:
 
 ```sh
-./build/flick photo.jpg
-./build/flick
+./build/flick photo.jpg                  # Linux
+open ./build/Flick.app --args photo.jpg  # macOS
 ```
 
-While Flick is running, press `Ctrl+O` to choose an image with the system file
+While Flick is running, press `Ctrl+O` on Linux or `Command+O` on macOS to choose an image with the system file
 picker. Dropping one image opens its containing directory for navigation;
 dropping several files creates a sequence from only the supported images in the
 drop.
@@ -78,7 +78,8 @@ moves.
 Press `Ctrl+,` or choose Settings from the viewport context menu to configure
 the wheel action, viewport background, transient status display, decoded-image
 cache budget, and optional window geometry restoration. Changes take effect
-immediately and are saved in the standard XDG configuration location. The open
+immediately and are saved in the standard XDG configuration location on Linux
+or CFPreferences on macOS. The open
 dialog also returns to the last directory from which an image was selected.
 
 Press `I` to inspect the current file's path, format, dimensions, size,
@@ -92,6 +93,10 @@ supported images can be opened from common file managers. Keyboard,
 accessibility, Wayland/X11, GNOME, KDE, theme, and scaling release checks are
 documented in
 [`docs/linux-integration.md`](docs/linux-integration.md).
+macOS builds install a universal `Flick.app` for macOS 13 or newer, use Finder
+file associations and menus, and obtain the active display profile through
+ColorSync/AppKit. Release signing and native verification are documented in
+[`packaging/macos/README.md`](packaging/macos/README.md).
 
 Repeatable performance measurements, x86_64 AppImage/development-archive
 creation, offline verification, and the release environment matrix are
