@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "flick_application.h"
 #include "platform_services.h"
 
 #include <QApplication>
@@ -36,6 +37,9 @@
 #include <QLabel>
 #include <QLocale>
 #include <QMimeData>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
@@ -484,6 +488,10 @@ public:
         viewport_->addAction(settingsAction);
         addAction(settingsAction);
 
+#if defined(Q_OS_MACOS)
+        addMacApplicationMenu(settingsAction);
+#endif
+
         if (!imagePath.isEmpty()) {
             openDirectoryBacked(imagePath);
         }
@@ -508,6 +516,14 @@ public:
             settings.remove(QStringLiteral("window/geometry"));
         }
         settings.sync();
+    }
+
+    void openExternalFile(const QString &path)
+    {
+        openDirectoryBacked(path);
+        showNormal();
+        raise();
+        activateWindow();
     }
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -799,6 +815,35 @@ protected:
     }
 
 private:
+#if defined(Q_OS_MACOS)
+    void addMacApplicationMenu(QAction *settingsAction)
+    {
+        applicationMenuBar_ = new QMenuBar(this);
+        applicationMenuBar_->setNativeMenuBar(true);
+        QMenu *fileMenu = applicationMenuBar_->addMenu(tr("File"));
+        auto *openAction = fileMenu->addAction(tr("Open…"));
+        openAction->setShortcut(QKeySequence::Open);
+        QObject::connect(openAction, &QAction::triggered, this, [this] {
+            openFromFilePicker();
+        });
+        fileMenu->addAction(settingsAction);
+        settingsAction->setMenuRole(QAction::PreferencesRole);
+
+        QMenu *applicationMenu = applicationMenuBar_->addMenu(tr("Flick"));
+        auto *aboutAction = applicationMenu->addAction(tr("About Flick"));
+        aboutAction->setMenuRole(QAction::AboutRole);
+        QObject::connect(aboutAction, &QAction::triggered, this, [this] {
+            QMessageBox::about(this, tr("About Flick"),
+                               tr("Flick %1\nA color-managed image viewer.")
+                                   .arg(QCoreApplication::applicationVersion()));
+        });
+        auto *quitAction = applicationMenu->addAction(tr("Quit Flick"));
+        quitAction->setMenuRole(QAction::QuitRole);
+        quitAction->setShortcut(QKeySequence::Quit);
+        QObject::connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+    }
+#endif
+
     void loadSettings()
     {
         QSettings settings;
@@ -1865,6 +1910,9 @@ private:
     quint64 accessCounter_ = 0;
     QList<QAction *> imageActions_;
     QString informationText_;
+#if defined(Q_OS_MACOS)
+    QMenuBar *applicationMenuBar_ = nullptr;
+#endif
 #ifdef FLICK_ENABLE_TEST_HARNESS
     QHash<QString, int> decodeCounts_;
     bool failExternalActionsForTest_ = false;
@@ -1904,10 +1952,11 @@ void scheduleCapture(ViewerWindow &window, QObject &context, const bool waitUnti
 
 int main(int argc, char *argv[])
 {
-    QApplication application(argc, argv);
+    FlickApplication application(argc, argv);
     QAccessible::installFactory(flickAccessibleInterface);
     QApplication::setApplicationName(QStringLiteral("Flick"));
     QApplication::setApplicationDisplayName(QStringLiteral("Flick"));
+    QApplication::setApplicationVersion(QStringLiteral(FLICK_VERSION));
     QApplication::setDesktopFileName(QStringLiteral("org.flick.Flick"));
     QApplication::setOrganizationName(QStringLiteral("Flick"));
 
@@ -1920,6 +1969,9 @@ int main(int argc, char *argv[])
     auto platformServices = createPlatformServices();
 #endif
     ViewerWindow window(imagePath, std::move(platformServices));
+    application.setFileOpenHandler([&window](const QString &path) {
+        window.openExternalFile(path);
+    });
     window.show();
     window.setFocus();
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -1946,6 +1998,12 @@ int main(int argc, char *argv[])
                 return;
             } else if (input.startsWith("SettingsState")) {
                 fprintf(stdout, "%s\n", window.settingsState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("LastPickerDirectory")) {
+                fprintf(stdout, "%s\n",
+                        QSettings().value(QStringLiteral("filePicker/lastDirectory"))
+                            .toString().toUtf8().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("WindowGeometry")) {

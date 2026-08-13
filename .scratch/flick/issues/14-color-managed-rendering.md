@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Supported formats, animation, and orientation.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Embedded ICC profiles are honored during rendering.
 - [x] Images without a profile are interpreted as sRGB.

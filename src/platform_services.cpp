@@ -10,6 +10,10 @@
 #include <algorithm>
 #include <cstdlib>
 
+#if defined(Q_OS_MACOS)
+#include "platform_services_macos.h"
+#endif
+
 #if defined(Q_OS_LINUX)
 #include <QDBusInterface>
 #include <QDBusObjectPath>
@@ -146,7 +150,11 @@ public:
 
 std::unique_ptr<PlatformServices> createPlatformServices()
 {
+#if defined(Q_OS_MACOS)
+    return createMacPlatformServices();
+#else
     return std::make_unique<DefaultPlatformServices>();
+#endif
 }
 
 #ifdef FLICK_ENABLE_TEST_HARNESS

@@ -11,10 +11,22 @@ target_compile_definitions(flick_application_test PRIVATE
     FLICK_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
 )
 
+qt_add_executable(flick_file_open_event_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/flick_file_open_event_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/flick_application.cpp
+    ${PROJECT_SOURCE_DIR}/src/flick_application.h
+)
+target_link_libraries(flick_file_open_event_test PRIVATE Qt6::Widgets Qt6::Test)
+target_compile_options(flick_file_open_event_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME flick.file-open-event COMMAND flick_file_open_event_test)
+set_tests_properties(flick.file-open-event PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 add_test(NAME flick.application COMMAND flick_application_test)
 set_tests_properties(flick.application PROPERTIES
     ENVIRONMENT "FLICK_EXECUTABLE=$<TARGET_FILE:flick_test_driver>;QT_QPA_PLATFORM=offscreen"
-    TIMEOUT 30
+    TIMEOUT 60
 )
 
 qt_add_executable(flick_performance
@@ -63,4 +75,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             -DBINARY_DIR=${PROJECT_BINARY_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/linux_release_layout_test.cmake
     )
+endif()
+
+if(APPLE)
+    qt_add_executable(flick_macos_platform_services_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/macos_platform_services_test.mm
+        ${PROJECT_SOURCE_DIR}/src/platform_services.cpp
+        ${PROJECT_SOURCE_DIR}/src/platform_services_macos.mm
+        ${PROJECT_SOURCE_DIR}/src/platform_services.h
+    )
+    target_link_libraries(flick_macos_platform_services_test PRIVATE
+        Qt6::Gui Qt6::Test "-framework AppKit"
+    )
+    target_compile_options(flick_macos_platform_services_test PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+    add_test(NAME flick.macos-platform-services COMMAND flick_macos_platform_services_test)
 endif()

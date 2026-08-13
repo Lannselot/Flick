@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Asynchronous decoding and bounded prefetch cache.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Valid JPEG, PNG, WebP, GIF, and BMP fixtures render with independently verified pixels and transparency where applicable.
 - [x] EXIF orientation is applied automatically to displayed content.
