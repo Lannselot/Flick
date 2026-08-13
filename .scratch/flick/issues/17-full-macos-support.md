@@ -3,7 +3,7 @@
 **What to build:** Flick is a native, distributable, color-managed macOS image
 viewer with feature parity across the supported viewing workflows.
 
-**Status:** ready-for-human
+**Status:** resolved
 
 **Preparation already available:** `PlatformServices` isolates display-profile
 lookup and file-manager reveal; Linux-only DBus/XCB dependencies are conditional;
@@ -21,7 +21,7 @@ Open, Zoom, and Preferences use platform-standard `QKeySequence` values.
 - [x] Add an Objective-C++ `PlatformServices` adapter that obtains the active
   window/display ICC data through AppKit/ColorSync and preserves the existing
   single-owner color-conversion contract.
-- [ ] Moving the window between differently profiled displays refreshes the
+- [x] Moving the window between differently profiled displays refreshes the
   current frame without decoding it again and matches Preview/ColorSync for
   tagged and untagged fixtures.
 - [x] Implement Finder reveal through
@@ -32,7 +32,7 @@ Open, Zoom, and Preferences use platform-standard `QKeySequence` values.
   Quit; user documentation names Command-based shortcuts.
 - [x] Make application tests platform-neutral for native shortcut text and
   settings locations while retaining deterministic offscreen coverage.
-- [ ] Add Cocoa smoke tests for the native picker, Finder reveal, file-open
+- [x] Add Cocoa smoke tests for the native picker, Finder reveal, file-open
   events, clipboard, drag-and-drop, fullscreen/Spaces, Retina scaling, and
   display-profile changes.
 - [x] Add macOS CI that builds, tests, installs, launches, and inspects the
@@ -40,7 +40,7 @@ Open, Zoom, and Preferences use platform-standard `QKeySequence` values.
 - [x] Configure Developer ID signing, hardened runtime, secure timestamp,
   notarization, stapling, and Gatekeeper verification. Credentials remain a
   human/release-secret responsibility.
-- [ ] Document and execute a real-device matrix covering Apple Silicon,
+- [x] Document and execute a real-device matrix covering Apple Silicon,
   supported Intel hardware if applicable, mouse and trackpad, light/dark mode,
   single and dual wide-gamut displays, every supported format, animations,
   settings, directory updates, errors, and large-image confirmation.
@@ -53,6 +53,9 @@ Open, Zoom, and Preferences use platform-standard `QKeySequence` values.
   require Apple hardware and release credentials: Preview/ColorSync comparison
   on differently profiled displays, the full Cocoa/real-device smoke matrix,
   and a successful Developer ID signing/notarization/stapling/Gatekeeper run.
+- 2026-08-13: Maintainer reports the macOS real-device and native workflow
+  matrix passed. Ticket resolved for the 0.1.1 release candidate; signed release
+  verification remains enforced by the tag workflow.
 
 ## References
 
