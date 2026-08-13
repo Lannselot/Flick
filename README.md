@@ -102,8 +102,8 @@ Repeatable performance measurements, x86_64 AppImage/development-archive
 creation, offline verification, and the release environment matrix are
 documented in
 [`docs/performance-and-release.md`](docs/performance-and-release.md).
-GitHub pull-request checks, tagged releases, repository settings, and future
-macOS CI separation are documented in [`docs/ci.md`](docs/ci.md).
+GitHub pull-request checks, Linux and macOS tagged releases, and repository
+settings are documented in [`docs/ci.md`](docs/ci.md).
 The release operator runbook is
 [`docs/releasing.md`](docs/releasing.md).
 The local source-build, staged-install, interactive smoke-test, and development
