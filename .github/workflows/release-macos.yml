@@ -1,0 +1,154 @@
+name: Release macOS
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build universal unsigned candidate
+    runs-on: macos-14
+    timeout-minutes: 35
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.5.*"
+          modules: qtimageformats
+          cache: true
+
+      - name: Configure production bundle
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DBUILD_TESTING=OFF
+
+      - name: Build and install
+        run: |
+          cmake --build build
+          cmake --install build --prefix stage
+
+      - name: Verify unsigned candidate layout
+        run: |
+          codesign --force --deep --sign - stage/Flick.app
+          packaging/macos/verify-bundle.sh stage/Flick.app
+
+      - name: Archive candidate
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent stage/Flick.app dist/Flick-macOS-universal-unsigned.zip
+
+      - name: Upload immutable candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: flick-macos-unsigned-${{ github.ref_name }}
+          path: dist/Flick-macOS-universal-unsigned.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-and-publish:
+    name: Sign, notarize, and publish
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: macos-14
+    timeout-minutes: 40
+    environment: release-macos
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out verification scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download unsigned candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: flick-macos-unsigned-${{ github.ref_name }}
+          path: incoming
+
+      - name: Import Developer ID identity
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/flick-signing.keychain-db"
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$APPLE_DEVELOPER_ID_CERTIFICATE" | base64 -D > "$certificate"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+
+      - name: Sign nested code and application
+        env:
+          APPLE_DEVELOPER_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
+        run: |
+          ditto -x -k incoming/Flick-macOS-universal-unsigned.zip signed
+          while IFS= read -r plugin; do
+            codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_IDENTITY" "$plugin"
+          done < <(find signed/Flick.app/Contents/PlugIns -type f -name '*.dylib')
+          while IFS= read -r framework; do
+            codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_IDENTITY" "$framework"
+          done < <(find signed/Flick.app/Contents/Frameworks -maxdepth 1 -type d -name '*.framework')
+          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_IDENTITY" signed/Flick.app/Contents/MacOS/Flick
+          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_IDENTITY" signed/Flick.app
+          codesign --verify --deep --strict --verbose=2 signed/Flick.app
+
+      - name: Notarize and staple
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          private_key="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          printf '%s' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$private_key"
+          ditto -c -k --keepParent signed/Flick.app signed/Flick-notarization.zip
+          xcrun notarytool submit signed/Flick-notarization.zip --key "$private_key" --key-id "$APP_STORE_CONNECT_KEY_ID" --issuer "$APP_STORE_CONNECT_ISSUER_ID" --wait
+          xcrun stapler staple signed/Flick.app
+          xcrun stapler validate signed/Flick.app
+          spctl --assess --type execute --verbose=2 signed/Flick.app
+
+      - name: Create final artifact and checksums
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent signed/Flick.app "dist/Flick-${GITHUB_REF_NAME}-macOS-universal.zip"
+          shasum -a 256 "dist/Flick-${GITHUB_REF_NAME}-macOS-universal.zip" > dist/SHA256SUMS-macOS
+
+      - name: Attest notarized artifact
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            dist/Flick-*-macOS-universal.zip
+            dist/SHA256SUMS-macOS
+
+      - name: Publish GitHub release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Flick $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Delete temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/flick-signing.keychain-db" || true

@@ -46,6 +46,19 @@ require(
 )
 require_actions_pinned(".github/workflows/ci.yml")
 require(
+    ".github/workflows/ci-macos.yml",
+    [
+        "macos-14",
+        'version: "6.5.*"',
+        "modules: qtimageformats",
+        '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"',
+        "ctest --test-dir build --output-on-failure",
+        "cmake --install build --prefix stage",
+        "packaging/macos/verify-bundle.sh stage/Flick.app",
+    ],
+)
+require_actions_pinned(".github/workflows/ci-macos.yml")
+require(
     ".github/workflows/release-linux.yml",
     [
         'tags: ["v*"]',
@@ -66,6 +79,24 @@ require(
     ],
 )
 require_actions_pinned(".github/workflows/release-linux.yml")
+require(
+    ".github/workflows/release-macos.yml",
+    [
+        'tags: ["v*"]',
+        "environment: release-macos",
+        "cmake --install build --prefix stage",
+        "packaging/macos/verify-bundle.sh stage/Flick.app",
+        "APPLE_DEVELOPER_ID_CERTIFICATE",
+        "codesign --verify --deep --strict",
+        "xcrun notarytool submit",
+        "xcrun stapler staple",
+        "spctl --assess",
+        "security delete-keychain",
+        "uses: actions/attest@",
+        'gh release create "$GITHUB_REF_NAME"',
+    ],
+)
+require_actions_pinned(".github/workflows/release-macos.yml")
 require(
     ".github/dependabot.yml",
     [

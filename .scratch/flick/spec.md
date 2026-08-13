@@ -4,11 +4,11 @@ Status: ready-for-agent
 
 ## Problem Statement
 
-Linux users need a fast, focused desktop application for viewing local images without the weight and complexity of a photo manager or editor. Existing tools may start slowly, hide folder navigation behind a file browser, couple viewing to editing workflows, or behave inconsistently across Wayland and X11. The user wants an IrfanView-like viewing experience centered on immediate launch, responsive keyboard-driven navigation through a directory, predictable zooming, and a minimal interface.
+Linux and macOS users need a fast, focused desktop application for viewing local images without the weight and complexity of a photo manager or editor. Existing tools may start slowly, hide folder navigation behind a file browser, couple viewing to editing workflows, or behave inconsistently across native desktop environments. The user wants an IrfanView-like viewing experience centered on immediate launch, responsive keyboard-driven navigation through a directory, predictable zooming, and a minimal interface.
 
 ## Solution
 
-Flick is an offline, English-language image viewer for modern 64-bit Linux desktops. It opens a local image from the file manager, command line, file chooser, or drag-and-drop, then builds a naturally sorted sequence of supported images so the user can browse immediately. It provides responsive rendering, animated image playback, fullscreen viewing, zooming, panning, temporary rotation, basic image information, safe clipboard and file-location actions, persisted preferences, color management, and defensive handling of malformed or exceptionally large files.
+Flick is an offline, English-language image viewer for modern 64-bit Linux desktops and macOS 13 or newer. It opens a local image from the file manager or Finder, command line, file chooser, or drag-and-drop, then builds a naturally sorted sequence of supported images so the user can browse immediately. It provides responsive rendering, animated image playback, fullscreen viewing, zooming, panning, temporary rotation, basic image information, safe clipboard and file-location actions, persisted preferences, color management, and defensive handling of malformed or exceptionally large files.
 
 The MVP prioritizes startup speed and viewing responsiveness over editing, asset management, extensibility, or broad format support. It is distributed primarily as an x86_64 AppImage and released as open source under GPL-3.0-or-later.
 
@@ -99,6 +99,7 @@ The MVP prioritizes startup speed and viewing responsiveness over editing, asset
 
 - Flick will be implemented in C++20 with Qt 6. Qt will be dynamically linked under its applicable LGPL terms; Flick itself will use GPL-3.0-or-later.
 - The supported deployment target is modern x86_64 Linux under both Wayland and X11, with current Ubuntu, Fedora, and Arch systems using GNOME or KDE as representative environments.
+- macOS support targets macOS 13 or newer with Qt 6.5 or newer. Releases use one universal application bundle containing both `arm64` and `x86_64` slices.
 - Each process owns one independent top-level window. Launching Flick again creates another process and window; the MVP has no single-instance IPC or tabs.
 - The application accepts an image path from the command line. Opening one file establishes a directory-backed sequence; dropping multiple files establishes an explicit-list sequence containing only the supplied supported files.
 - Directory-backed sequences contain supported, non-hidden files and use case-insensitive natural filename ordering. Sequence navigation stops at both ends and reports the boundary briefly instead of wrapping.
@@ -117,7 +118,7 @@ The MVP prioritizes startup speed and viewing responsiveness over editing, asset
 - Decode or access failure produces an in-window error without terminating Flick. Navigation remains available, `F5` retries, and technical details can be expanded.
 - Images whose declared dimensions exceed 100 megapixels or whose estimated decoded allocation exceeds 1 GB require explicit user confirmation. An approved decode still occurs asynchronously.
 - The MVP uses current Qt decoding facilities and defensive size checks but does not isolate decoders in a sandboxed helper process.
-- Settings cover wheel action, viewport background color, status visibility, window geometry restoration, and cache budget. They apply immediately and persist under the standard XDG configuration location.
+- Settings cover wheel action, viewport background color, status visibility, window geometry restoration, and cache budget. They apply immediately and persist through the platform-native settings backend (XDG configuration on Linux and CFPreferences on macOS).
 - The file chooser remembers its last directory. Desktop integration supports file associations and opening supported files from common Linux file managers.
 - The application performs no network requests. It has no telemetry, update check, cloud integration, or remote content loading.
 - User-facing text is English. Strings are structured for future localization. Qt's system theme, DPI scaling, keyboard focus, and accessibility metadata are used where supported.
@@ -155,7 +156,7 @@ The MVP prioritizes startup speed and viewing responsiveness over editing, asset
 - Animation timeline, seeking, frame stepping, or frame export.
 - Decoder isolation in a separate sandboxed process.
 - Dedicated screen-reader optimization and custom high-contrast themes beyond Qt-provided accessibility behavior.
-- 32-bit systems, non-x86_64 builds, legacy Linux distributions, macOS, and Windows.
+- 32-bit systems, architectures other than `x86_64` and Apple `arm64`, legacy Linux distributions, macOS older than 13, and Windows.
 - Flatpak, Snap, DEB, RPM, distribution repositories, and automatic updating.
 - Networking of any kind, including telemetry, analytics, update checks, cloud storage, sharing, or remote URL opening.
 - Russian or other translated interfaces in the MVP.

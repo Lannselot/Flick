@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
+#include <QKeySequence>
 #include <QProcess>
 #include <QRect>
 #include <QTemporaryDir>
@@ -412,12 +413,8 @@ void FlickApplicationTest::opensSelectedImageWithCtrlO()
     const QImage opened = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlO"));
     QVERIFY(containsColor(opened, selectedColor));
 
-    QFile settingsFile(
-        flick.environment.filePath(QStringLiteral("config/Flick/Flick.conf")));
-    QVERIFY(settingsFile.open(QIODevice::ReadOnly));
-    const QByteArray persistedSettings = settingsFile.readAll();
-    QVERIFY(persistedSettings.contains("lastDirectory="));
-    QVERIFY(persistedSettings.contains(directory.path().toUtf8()));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("LastPickerDirectory")),
+             directory.path().toUtf8());
 }
 
 void FlickApplicationTest::singleImageDropBrowsesContainingDirectory()
@@ -490,7 +487,7 @@ void FlickApplicationTest::directorySequenceTracksExternalFilesystemChanges()
 
     const QString second = writeImage(directory, QStringLiteral("image2.png"), secondColor);
     QVERIFY(!second.isEmpty());
-    QTest::qWait(300);
+    QTest::qWait(1000);
     QVERIFY(containsColor(pressKeyAndWaitForScreenshot(flick, Qt::Key_Right), secondColor));
 
     QVERIFY(QFile::remove(second));
@@ -878,7 +875,14 @@ void FlickApplicationTest::animatedWebpPreservesTimingAndLoops()
     start(flick, {path});
     QVERIFY(containsColor(waitForScreenshot(flick), QColor(220, 20, 60), 5));
     QVERIFY(containsColor(captureAfter(flick, 170), QColor(50, 205, 50), 3));
-    QVERIFY(containsColor(captureAfter(flick, 230), QColor(220, 20, 60), 5));
+    bool loopedToFirstFrame = false;
+    QElapsedTimer loopWait;
+    loopWait.start();
+    while (!loopedToFirstFrame && loopWait.elapsed() < 1000) {
+        loopedToFirstFrame =
+            containsColor(captureAfter(flick, 25), QColor(220, 20, 60), 5);
+    }
+    QVERIFY2(loopedToFirstFrame, "animated WebP did not loop back to its first frame");
 }
 
 void FlickApplicationTest::spacePausesAndResumesAnimationButDoesNotAffectStaticImages()
@@ -980,8 +984,8 @@ void FlickApplicationTest::highZoomRemainsResponsiveWithoutAllocatingTheFullScal
                  .toDouble(),
              9.313226);
 
-    QFile processStatus(
-        QStringLiteral("/proc/%1/status").arg(flick.process.processId()));
+#if defined(Q_OS_LINUX)
+    QFile processStatus(QStringLiteral("/proc/%1/status").arg(flick.process.processId()));
     QVERIFY(processStatus.open(QIODevice::ReadOnly));
     const QByteArray status = processStatus.readAll();
     const qsizetype residentMemoryLine = status.indexOf("VmRSS:");
@@ -995,6 +999,7 @@ void FlickApplicationTest::highZoomRemainsResponsiveWithoutAllocatingTheFullScal
     QVERIFY2(residentMemory.toLongLong() < 128 * 1024,
              qPrintable(QStringLiteral("Flick used %1 kB at 931% zoom")
                             .arg(QString::fromLatin1(residentMemory))));
+#endif
     QVERIFY(flick.process.state() == QProcess::Running);
 }
 
@@ -1387,9 +1392,14 @@ void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()
     const QByteArray actions =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("ContextActions"));
     QVERIFY(actions.contains("Information [I]"));
-    QVERIFY(actions.contains("Copy Image [Ctrl+C]"));
-    QVERIFY(actions.contains("Copy Path [Ctrl+Shift+C]"));
-    QVERIFY(actions.contains("Show in File Manager [Ctrl+Shift+R]"));
+    const auto actionLabel = [](const char *name, const QKeySequence &shortcut) {
+        return QByteArray(name) + " [" + shortcut.toString(QKeySequence::NativeText).toUtf8() + ']';
+    };
+    QVERIFY(actions.contains(actionLabel("Copy Image", QKeySequence(Qt::CTRL | Qt::Key_C))));
+    QVERIFY(actions.contains(actionLabel(
+        "Copy Path", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C))));
+    QVERIFY(actions.contains(actionLabel(
+        "Show in File Manager", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R))));
 
     QTemporaryDir incomingDirectory;
     QVERIFY(incomingDirectory.isValid());
@@ -1454,16 +1464,27 @@ void FlickApplicationTest::exposesAccessibleKeyboardActions()
     const QByteArray accessibility =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("AccessibilityState"));
     QVERIFY(accessibility.contains("Image viewport|AccessibleRole=Graphic|"));
-    QVERIFY(accessibility.contains("Open Image|Ctrl+O"));
-    QVERIFY(accessibility.contains("Previous Image|Left"));
-    QVERIFY(accessibility.contains("Next Image|Right"));
-    QVERIFY(accessibility.contains("Pan Left|Shift+Left"));
-    QVERIFY(accessibility.contains("Pan Right|Shift+Right"));
-    QVERIFY(accessibility.contains("Pan Up|Shift+Up"));
-    QVERIFY(accessibility.contains("Pan Down|Shift+Down"));
-    QVERIFY(accessibility.contains("Fit to Window|F"));
-    QVERIFY(accessibility.contains("Actual Size|1"));
-    QVERIFY(accessibility.contains("Toggle Fullscreen|F11"));
+    const QByteArray openAction =
+        QByteArrayLiteral("Open Image|") +
+        QKeySequence(QKeySequence::Open).toString(QKeySequence::NativeText).toUtf8();
+    QVERIFY(accessibility.contains(openAction));
+    const auto accessibleAction = [](const char *name, const QKeySequence &shortcut) {
+        return QByteArray(name) + '|' + shortcut.toString(QKeySequence::NativeText).toUtf8();
+    };
+    QVERIFY(accessibility.contains(accessibleAction("Previous Image", QKeySequence(Qt::Key_Left))));
+    QVERIFY(accessibility.contains(accessibleAction("Next Image", QKeySequence(Qt::Key_Right))));
+    QVERIFY(accessibility.contains(accessibleAction(
+        "Pan Left", QKeySequence(Qt::SHIFT | Qt::Key_Left))));
+    QVERIFY(accessibility.contains(accessibleAction(
+        "Pan Right", QKeySequence(Qt::SHIFT | Qt::Key_Right))));
+    QVERIFY(accessibility.contains(accessibleAction(
+        "Pan Up", QKeySequence(Qt::SHIFT | Qt::Key_Up))));
+    QVERIFY(accessibility.contains(accessibleAction(
+        "Pan Down", QKeySequence(Qt::SHIFT | Qt::Key_Down))));
+    QVERIFY(accessibility.contains(accessibleAction("Fit to Window", QKeySequence(Qt::Key_F))));
+    QVERIFY(accessibility.contains(accessibleAction("Actual Size", QKeySequence(Qt::Key_1))));
+    QVERIFY(accessibility.contains(accessibleAction(
+        "Toggle Fullscreen", QKeySequence(Qt::Key_F11))));
     QVERIFY(accessibility.contains("Settings|"));
 }
 

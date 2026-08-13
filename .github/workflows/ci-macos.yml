@@ -1,0 +1,66 @@
+name: macOS CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  universal-bundle:
+    name: Universal macOS bundle
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.5.*"
+          modules: qtimageformats
+          cache: true
+
+      - name: Configure universal build
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run deterministic tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install deployed bundle
+        run: cmake --install build --prefix stage
+
+      - name: Apply CI ad-hoc signature
+        run: codesign --force --deep --sign - stage/Flick.app
+
+      - name: Verify deployed bundle
+        run: packaging/macos/verify-bundle.sh stage/Flick.app
+
+      - name: Launch every installed image format
+        run: |
+          for fixture in static.jpg static.png static.gif static.bmp static.webp; do
+            base64 -D -i "tests/fixtures/$fixture.base64" -o "$RUNNER_TEMP/$fixture"
+            stage/Flick.app/Contents/MacOS/Flick "$RUNNER_TEMP/$fixture" &
+            app_pid=$!
+            sleep 2
+            kill -0 "$app_pid"
+            kill "$app_pid"
+            wait "$app_pid" || true
+          done
