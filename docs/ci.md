@@ -150,10 +150,9 @@ signature, notarizes and staples the app, runs Gatekeeper assessment, creates
 checksums and provenance attestations, and uploads only the verified artifact
 to the GitHub Release. The temporary keychain is deleted even after failure.
 
-At the time the `0.1.1` release branch was prepared, the repository exposed the
-Linux `release` Environment but not `release-macos`. Pushing `v0.1.1` before
-creating and populating `release-macos` will allow the unprivileged candidate
-build to run, but the signed macOS publication job cannot complete.
+The signed job validates that every required secret is non-empty before it
+touches the temporary keychain. Missing configuration therefore produces a
+named preflight error while preserving the already verified unsigned candidate.
 
 ```mermaid
 flowchart TD
