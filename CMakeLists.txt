@@ -7,7 +7,7 @@ if(APPLE)
     endif()
 endif()
 
-project(Flick VERSION 0.1.1 LANGUAGES CXX)
+project(Flick VERSION 0.1.2 LANGUAGES CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()
