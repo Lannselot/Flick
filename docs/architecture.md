@@ -1,7 +1,8 @@
 # Архитектура Flick
 
-Документ описывает текущую архитектуру приложения. Flick пока представляет собой
-небольшое Qt-приложение, основная логика которого сосредоточена в `src/main.cpp`.
+Документ описывает текущую архитектуру приложения. `ViewerWindow` в `src/main.cpp`
+координирует представление, а жизненным циклом загрузки изображений и browsing sequence
+владеют отдельные глубокие модули.
 
 ## Компоненты приложения
 
@@ -15,10 +16,9 @@ flowchart TB
         Input[Обработчики ввода<br/>клавиатура и drag-and-drop]
         Sequence[BrowsingSequence<br/>пути, выбор, навигация и reconciliation]
         Watcher[QFileSystemWatcher<br/>каталог активной последовательности]
-        Workers[QtConcurrent workers]
-        Reader[QImageReader]
-        Metadata[GIF/WebP timing metadata]
-        Cache[Decoded image cache<br/>512 MB byte budget]
+        Loading[ImageLoading::Loader<br/>requests, freshness, retry, prefetch]
+        Decode[ImageLoading::decode<br/>QImageReader, safety, metadata]
+        Cache[ImageLoading cache<br/>LRU byte budget]
         Image[QImage frames<br/>декодированные пиксели]
         Animation[Animation timer<br/>frame delays and loops]
         Canvas[ImageCanvas<br/>clipped painting]
@@ -31,14 +31,16 @@ flowchart TB
         Window --> Input
         Input --> Sequence
         Watcher --> Sequence
-        Sequence --> Workers
-        Workers --> Reader
-        Workers --> Metadata
-        Reader --> Image
-        Image --> Cache
-        Cache --> Animation
+        Window --> Loading
+        Sequence --> Window
+        Loading --> Decode
+        Decode --> Image
+        Image --> Loading
+        Loading --> Cache
+        Loading --> Window
+        Window --> Animation
         Animation --> Canvas
-        Cache --> Canvas
+        Window --> Canvas
         Canvas --> Viewport
         Window --> Feedback
         Window --> Settings
@@ -47,19 +49,32 @@ flowchart TB
 
     Files[(Локальные файлы)] --> Sequence
     Files --> Watcher
-    Files --> Reader
+    Files --> Decode
     User --> Input
     Viewport --> User
     Feedback --> User
 ```
 
-`ViewerWindow` одновременно отвечает за интерфейс, построение списка файлов,
-навигацию и загрузку изображения. Отдельного слоя модели или сервиса
-декодирования в текущей версии нет.
+### Модули и их seams
+
+`BrowsingSequence` — единственный владелец упорядоченных путей и выбранного пути current image,
+границ навигации и reconciliation после изменения каталога. Его публичный seam —
+фабрики `directoryBacked` и `explicitList`, операции навигации и `reconcileDirectory`,
+возвращающие типизированные outcomes. Файловый watcher остаётся Qt-адаптером окна.
+
+`ImageLoading::Loader` — единственный владелец асинхронных запросов, freshness, retry,
+prefetch и ограниченного кеша. Его публичный seam — `request`, `retry`,
+`prefetchAdjacent` и outcome handlers. Функция `ImageLoading::decode` скрывает
+`QImageReader`, safety limits и метаданные анимации за типизированным `DecodeOutcome`.
+
+`ViewerWindow` хранит view state и презентационное состояние: виджеты, диалоги,
+анимационный таймер, zoom, pan, rotation и преобразование цвета. Окно переводит
+ввод в вызовы модулей, а их outcomes — в видимое состояние. Оно не дублирует
+выбранный путь current image, кеш, множество запросов или политику prefetch.
 
 Для последовательности, открытой из одного файла, `QFileSystemWatcher` следит
-за содержащим его каталогом. При изменении каталога `ViewerWindow` повторно
-фильтрует и естественно сортирует поддерживаемые видимые файлы. Явная
+за содержащим его каталогом. При изменении каталога `ViewerWindow` передаёт наблюдение
+в `BrowsingSequence::reconcileDirectory`, где выполняются фильтрация, сортировка и выбор. Явная
 последовательность из нескольких переданных путей не регистрирует каталог в
 наблюдателе и поэтому не расширяется внешними добавлениями.
 
@@ -70,47 +85,40 @@ sequenceDiagram
     actor User as Пользователь
     participant Entry as CLI / File Picker / Drop
     participant Window as ViewerWindow
-    participant FS as Файловая система
-    participant Reader as QImageReader
+    participant Sequence as BrowsingSequence
+    participant Loading as ImageLoading::Loader
     participant UI as QLabel / QScrollArea
 
     User->>Entry: Выбирает изображение
     Entry->>Window: Передаёт путь
-    Window->>FS: Проверяет файл и расширение
+    Window->>Sequence: Создаёт browsing sequence
 
     alt Открыт один файл
-        Window->>FS: Читает файлы его каталога
-        FS-->>Window: Список файлов
-        Window->>Window: Фильтрация и естественная сортировка
+        Sequence->>Sequence: Фильтрует и естественно сортирует каталог
     else Передано несколько файлов
-        Window->>Window: Фильтрация, удаление дублей и сортировка
+        Sequence->>Sequence: Фильтрует, удаляет дубли и сортирует
     end
 
-    Window->>Reader: Запускает декодирование через QtConcurrent
-    Reader->>Reader: QImageReader(path)
-    Window->>Reader: setAutoTransform(true)
-    Reader->>FS: Читает закодированные данные
-    FS-->>Reader: Байты файла
-    Reader->>Reader: Определяет формат и декодирует пиксели
-    Reader-->>Window: QImage
+    Sequence-->>Window: current image path
+    Window->>Loading: request(path)
+    Loading->>Loading: safety, decode, freshness и cache
+    Loading-->>Window: DecodeOutcome
 
     alt Декодирование успешно
-        Window->>Window: Добавляет QImage в ограниченный кеш
-        Window->>Window: Сверяет путь с последним запросом
         Window->>UI: ImageCanvas::showImage(image_)
-        Window->>Reader: Предзагружает соседние элементы
+        Window->>Loading: prefetchAdjacent(paths)
         UI-->>User: Показывает изображение
-    else Получен пустой QImage
-        Window->>UI: Показывает пустое состояние
-        UI-->>User: Изображение не отображается
+    else DecodeFailure или ConfirmationRequired
+        Window->>UI: Показывает error или confirmation
     end
 ```
 
 `QImageReader::read()` выполняется в пуле рабочих потоков через `QtConcurrent`.
-GUI-поток принимает только готовый `QImage`, сверяет его путь с последним
-запрошенным элементом и поэтому игнорирует устаревшие результаты. Предыдущий и
-следующий элементы предзагружаются. Декодированные изображения хранятся в кеше
-с LRU-вытеснением и бюджетом около 512 МБ.
+`ImageLoading::Loader` сверяет завершившийся путь с current image и не передаёт окну
+устаревшие outcomes. GUI-поток принимает только outcome текущего запроса и
+превращает его в презентацию. Предыдущий и следующий элементы предзагружаются.
+Декодированные изображения хранятся в кеше модуля с LRU-вытеснением и бюджетом
+около 512 МБ.
 
 Перед чтением пикселей рабочая задача проверяет объявленные размеры изображения
 и оценивает распакованный RGBA-буфер. При размере свыше 100 мегапикселей или

@@ -343,7 +343,7 @@ public:
 
     bool isLoading() const
     {
-        return imageLoader_.isLoading(requestedPath_);
+        return imageLoader_.isLoading(browsingSequence_.selectedPath());
     }
 
     void displayConfigurationChanged()
@@ -1007,12 +1007,13 @@ private:
 
     void updateStatusText()
     {
-        if (browsingSequence_.selectedIndex() < 0 || requestedPath_.isEmpty()) {
+        const QString currentPath = browsingSequence_.selectedPath();
+        if (currentPath.isEmpty()) {
             return;
         }
         statusDisplay_->setText(
             tr("%1 — %2 / %3 — %4%")
-                .arg(QFileInfo(requestedPath_).fileName())
+                .arg(QFileInfo(currentPath).fileName())
                 .arg(browsingSequence_.selectedIndex() + 1)
                 .arg(browsingSequence_.paths().size())
                 .arg(qRound(zoom_ * 100)));
@@ -1120,29 +1121,30 @@ private:
     {
         dismissLargeImageWarning();
         rotationQuarterTurns_ = 0;
-        requestedPath_ = browsingSequence_.selectedPath();
-        imageLoader_.setCurrentPath(requestedPath_);
+        const QString currentPath = browsingSequence_.selectedPath();
+        imageLoader_.setCurrentPath(currentPath);
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
         }
-        requestDecode(requestedPath_);
+        requestDecode(currentPath);
     }
 
     void retryCurrentImage()
     {
-        if (browsingSequence_.selectedIndex() < 0 || requestedPath_.isEmpty()) {
+        const QString currentPath = browsingSequence_.selectedPath();
+        if (currentPath.isEmpty()) {
             return;
         }
         errorState_->hide();
         dismissLargeImageWarning();
-        retryDecode(requestedPath_);
+        retryDecode(currentPath);
     }
 
     void approveLargeImage()
     {
         const QString approvedPath = pendingLargeImagePath_;
         dismissLargeImageWarning();
-        if (!approvedPath.isEmpty() && requestedPath_ == approvedPath) {
+        if (!approvedPath.isEmpty() && browsingSequence_.selectedPath() == approvedPath) {
             retryDecode(approvedPath, true);
         }
     }
@@ -1150,7 +1152,8 @@ private:
     void rejectLargeImage()
     {
         const bool rejectingCurrent =
-            !pendingLargeImagePath_.isEmpty() && requestedPath_ == pendingLargeImagePath_;
+            !pendingLargeImagePath_.isEmpty() &&
+            browsingSequence_.selectedPath() == pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (rejectingCurrent) {
             showEmptyState();
@@ -1166,7 +1169,7 @@ private:
 
     void present(const QString &path, const LoadedImage &decoded)
     {
-        if (decoded.frames.isEmpty() || requestedPath_ != path) {
+        if (decoded.frames.isEmpty() || browsingSequence_.selectedPath() != path) {
             return;
         }
         animationTimer_->stop();
@@ -1223,9 +1226,8 @@ private:
             return;
         }
 
-        requestedPath_.clear();
-        imageLoader_.setCurrentPath({});
         if (outcome == BrowsingSequence::ReconcileOutcome::Empty) {
+            imageLoader_.setCurrentPath({});
             currentImage_ = {};
             image_ = {};
             animationTimer_->stop();
@@ -1569,7 +1571,6 @@ private:
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
     BrowsingSequence browsingSequence_ = BrowsingSequence::explicitList({});
-    QString requestedPath_;
     QString pendingFilePickerPath_;
     QString pendingFeedback_;
     LoadedImage currentImage_;
