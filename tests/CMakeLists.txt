@@ -15,6 +15,16 @@ target_compile_definitions(image_loading_test PRIVATE
 )
 add_test(NAME flick.image-loading COMMAND image_loading_test)
 
+qt_add_executable(browsing_sequence_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/browsing_sequence_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/browsing_sequence.cpp
+    ${PROJECT_SOURCE_DIR}/src/browsing_sequence.h
+)
+target_include_directories(browsing_sequence_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(browsing_sequence_test PRIVATE Qt6::Core Qt6::Test)
+target_compile_options(browsing_sequence_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME flick.browsing-sequence COMMAND browsing_sequence_test)
+
 qt_add_executable(flick_application_test
     ${CMAKE_CURRENT_SOURCE_DIR}/flick_application_test.cpp
 )

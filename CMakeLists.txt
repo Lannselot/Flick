@@ -38,6 +38,8 @@ function(add_flick_executable target)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/browsing_sequence.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/browsing_sequence.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/image_loading.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/image_loading.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp

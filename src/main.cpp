@@ -15,7 +15,7 @@
 #include <QColor>
 #include <QColorSpace>
 #include <QColorDialog>
-#include <QCollator>
+#include "browsing_sequence.h"
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
@@ -1046,88 +1046,36 @@ private:
         statusTimer_->start(StatusVisibilityMilliseconds);
     }
 
-    static bool isSupportedImage(const QString &path)
-    {
-        static const QStringList supportedSuffixes = {QStringLiteral("jpg"), QStringLiteral("jpeg"),
-                                                      QStringLiteral("png"), QStringLiteral("webp"),
-                                                      QStringLiteral("gif"), QStringLiteral("bmp")};
-        const QFileInfo file(path);
-        return file.isFile() && supportedSuffixes.contains(file.suffix(), Qt::CaseInsensitive);
-    }
-
-    static void sortNaturally(QStringList &paths)
-    {
-        QCollator collator(QLocale::English);
-        collator.setCaseSensitivity(Qt::CaseInsensitive);
-        collator.setNumericMode(true);
-        std::sort(paths.begin(), paths.end(), [&collator](const QString &left, const QString &right) {
-            const QString leftName = QFileInfo(left).fileName();
-            const QString rightName = QFileInfo(right).fileName();
-            const int naturalOrder = collator.compare(leftName, rightName);
-            return naturalOrder == 0 ? leftName < rightName : naturalOrder < 0;
-        });
-    }
-
-    static QStringList directorySequenceForDirectory(const QString &directoryPath)
-    {
-        const QDir directory(directoryPath);
-        QStringList paths;
-        for (const QFileInfo &entry : directory.entryInfoList(QDir::Files)) {
-            if (isSupportedImage(entry.filePath())) {
-                paths.append(entry.canonicalFilePath());
-            }
-        }
-        sortNaturally(paths);
-        return paths;
-    }
-
-    static QStringList directorySequence(const QString &imagePath)
-    {
-        return directorySequenceForDirectory(QFileInfo(imagePath).absolutePath());
-    }
-
     void openDirectoryBacked(const QString &path)
     {
-        if (!isSupportedImage(path)) {
+        const BrowsingSequence browsingSequence = BrowsingSequence::directoryBacked(path);
+        if (browsingSequence.selectedIndex() < 0) {
             showFeedback(tr("Unsupported dropped content"));
             return;
         }
-        const QString canonicalPath = QFileInfo(path).canonicalFilePath();
+        const QString canonicalPath = browsingSequence.selectedPath();
         const QString directoryPath = QFileInfo(canonicalPath).absolutePath();
         directoryWatcher_->removePaths(directoryWatcher_->directories());
         directoryWatcher_->addPath(directoryPath);
-        sequence_ = directorySequence(canonicalPath);
-        const int openedIndex = sequence_.indexOf(canonicalPath);
-        if (openedIndex < 0) {
-            showEmptyState();
-            return;
-        }
-        displayImage(openedIndex);
+        sequence_ = browsingSequence.paths();
+        displayImage(browsingSequence.selectedIndex());
     }
 
     void openExplicitList(const QStringList &paths)
     {
         directoryWatcher_->removePaths(directoryWatcher_->directories());
-        sequence_.clear();
-        for (const QString &path : paths) {
-            if (isSupportedImage(path)) {
-                const QString canonicalPath = QFileInfo(path).canonicalFilePath();
-                if (!sequence_.contains(canonicalPath)) {
-                    sequence_.append(canonicalPath);
-                }
-            }
-        }
-        sortNaturally(sequence_);
+        const BrowsingSequence browsingSequence = BrowsingSequence::explicitList(paths);
+        sequence_ = browsingSequence.paths();
         if (sequence_.isEmpty()) {
             showFeedback(tr("No supported images in drop"));
             return;
         }
-        displayImage(0);
+        displayImage(browsingSequence.selectedIndex());
     }
 
     void openDroppedPaths(const QStringList &paths)
     {
-        if (paths.size() == 1 && isSupportedImage(paths.first())) {
+        if (paths.size() == 1 && BrowsingSequence::supports(paths.first())) {
             openDirectoryBacked(paths.first());
         } else {
             openExplicitList(paths);
@@ -1159,7 +1107,8 @@ private:
         if (selectedPath.isEmpty()) {
             return;
         }
-        if (!isSupportedImage(selectedPath)) {
+        const BrowsingSequence browsingSequence = BrowsingSequence::directoryBacked(selectedPath);
+        if (browsingSequence.selectedIndex() < 0) {
             showFeedback(tr("Unsupported image"));
             return;
         }
@@ -1266,8 +1215,9 @@ private:
         }
         const int previousIndex = currentIndex_;
         const QString previousPath = requestedPath_;
-        QStringList refreshed =
-            directorySequenceForDirectory(directoryWatcher_->directories().constFirst());
+        QStringList refreshed = BrowsingSequence::directoryBacked(
+                                    directoryWatcher_->directories().constFirst(), previousPath)
+                                    .paths();
         const int preservedIndex = refreshed.indexOf(previousPath);
         sequence_ = std::move(refreshed);
         if (preservedIndex >= 0) {
