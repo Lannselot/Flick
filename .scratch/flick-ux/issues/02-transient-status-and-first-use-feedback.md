@@ -5,20 +5,19 @@ pill overlay without introducing permanent chrome or a second toast system.
 
 **Blocked by:** 01: Selected viewing surface and presentation states.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The bottom-centered pill uses the accepted Variant C treatment and normally reports filename,
+- [x] The bottom-centered pill uses the accepted Variant C treatment and normally reports filename,
       sequence position, and zoom.
-- [ ] Open, navigation, zoom, rotation, and pointer movement reveal the overlay, which fades without
+- [x] Open, navigation, zoom, rotation, and pointer movement reveal the overlay, which fades without
       flashing and remains legible without blur.
-- [ ] Long filenames truncate safely at 480×320 instead of expanding or clipping the viewing
+- [x] Long filenames truncate safely at 480×320 instead of expanding or clipping the viewing
       surface.
-- [ ] Sequence-boundary, copy-success, and similar brief feedback temporarily reuse the same overlay
+- [x] Sequence-boundary, copy-success, and similar brief feedback temporarily reuse the same overlay
       slot before normal status returns.
-- [ ] The first displayed image teaches browsing and the context menu once, and successful use marks
+- [x] The first displayed image teaches browsing and the context menu once, and successful use marks
       that teaching complete.
-- [ ] First fullscreen entry teaches F11 or Escape in the same feedback system without adding a
+- [x] First fullscreen entry teaches F11 or Escape in the same feedback system without adding a
       control bar.
-- [ ] Overlay behavior and optional transitions respect status-visibility and reduced-motion
+- [x] Overlay behavior and optional transitions respect status-visibility and reduced-motion
       settings.
-

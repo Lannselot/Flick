@@ -77,6 +77,8 @@
 namespace {
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 constexpr int StatusVisibilityMilliseconds = 2000;
+constexpr int FeedbackVisibilityMilliseconds = 1500;
+constexpr int StatusFadeMilliseconds = 160;
 constexpr int KeyboardPanStep = 40;
 constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
 constexpr int LoadingIndicatorDelayMilliseconds = 120;
@@ -250,18 +252,32 @@ public:
         statusDisplay_->setAccessibleDescription(
             tr("Current filename, sequence position, and zoom level."));
         statusDisplay_->setAttribute(Qt::WA_TransparentForMouseEvents);
-        statusDisplay_->setAutoFillBackground(true);
-        statusDisplay_->setBackgroundRole(QPalette::ToolTipBase);
-        statusDisplay_->setForegroundRole(QPalette::ToolTipText);
-        statusDisplay_->setFrameStyle(QFrame::StyledPanel | QFrame::Plain);
-        statusDisplay_->setMargin(6);
+        statusDisplay_->setObjectName(QStringLiteral("statusOverlay"));
+        statusDisplay_->setStyleSheet(QStringLiteral(
+            "QLabel#statusOverlay { color: #f5f5f5; background-color: rgba(20, 20, 20, 238); "
+            "border-radius: 11px; padding: 4px 10px; }"));
+        statusOpacity_ = new QGraphicsOpacityEffect(statusDisplay_);
+        statusDisplay_->setGraphicsEffect(statusOpacity_);
+        statusFade_ = new QPropertyAnimation(statusOpacity_, "opacity", this);
+        statusFade_->setDuration(StatusFadeMilliseconds);
+        statusFade_->setStartValue(1.0);
+        statusFade_->setEndValue(0.0);
+        QObject::connect(statusFade_, &QPropertyAnimation::finished, this, [this] {
+            statusDisplay_->hide();
+            statusOpacity_->setOpacity(1.0);
+            if (isFullScreen()) {
+                viewport_->viewport()->setCursor(Qt::BlankCursor);
+            }
+        });
         statusDisplay_->hide();
         statusTimer_ = new QTimer(this);
         statusTimer_->setSingleShot(true);
         QObject::connect(statusTimer_, &QTimer::timeout, this, [this] {
-            statusDisplay_->hide();
-            if (isFullScreen()) {
-                viewport_->viewport()->setCursor(Qt::BlankCursor);
+            if (statusIsFeedback_ && browsingSequence_.selectedIndex() >= 0) {
+                showStatus(false);
+            } else {
+                statusIsFeedback_ = false;
+                hideStatus();
             }
         });
         loadSettings();
@@ -657,6 +673,10 @@ protected:
             showStatus(true);
         }
         if ((watched == viewport_->viewport() || watched == imageLabel_) &&
+            event->type() == QEvent::ContextMenu) {
+            markBrowsingTeachingComplete();
+        }
+        if ((watched == viewport_->viewport() || watched == imageLabel_) &&
             event->type() == QEvent::MouseButtonDblClick) {
             toggleFullscreen();
             return true;
@@ -869,6 +889,10 @@ private:
             viewportBackground_ = QColor(QStringLiteral("#181A1B"));
         }
         statusVisible_ = settings.value(QStringLiteral("view/statusVisible"), true).toBool();
+        browsingTeachingComplete_ =
+            settings.value(QStringLiteral("teaching/browsingComplete"), false).toBool();
+        fullscreenTeachingComplete_ =
+            settings.value(QStringLiteral("teaching/fullscreenComplete"), false).toBool();
         qsizetype cacheBudgetBytes =
             settings.value(QStringLiteral("cache/budgetBytes"), DefaultCacheBudgetBytes)
                 .toLongLong();
@@ -1119,6 +1143,8 @@ private:
         clipboard->setText(path);
         if (clipboard->text() != path) {
             showFeedback(tr("Could not copy the current file path"));
+        } else {
+            showFeedback(tr("File path copied"));
         }
     }
 
@@ -1136,6 +1162,8 @@ private:
         clipboard->setImage(content);
         if (clipboard->image() != content) {
             showFeedback(tr("Could not copy the current image"));
+        } else {
+            showFeedback(tr("Image copied"));
         }
     }
 
@@ -1165,7 +1193,15 @@ private:
             leaveFullscreen();
         } else {
             showFullScreen();
-            showStatus(true);
+            if (!fullscreenTeachingComplete_) {
+                fullscreenTeachingComplete_ = true;
+                QSettings settings;
+                settings.setValue(QStringLiteral("teaching/fullscreenComplete"), true);
+                settings.sync();
+                showFeedback(tr("F11 or Esc to exit fullscreen"));
+            } else {
+                showStatus(true);
+            }
         }
     }
 
@@ -1182,12 +1218,22 @@ private:
         if (currentPath.isEmpty()) {
             return;
         }
-        statusDisplay_->setText(
-            tr("%1 — %2 / %3 — %4%")
-                .arg(QFileInfo(currentPath).fileName())
+        const QString context =
+            tr("%1 / %2 — %3%")
                 .arg(browsingSequence_.selectedIndex() + 1)
                 .arg(browsingSequence_.paths().size())
-                .arg(qRound(zoom_ * 100)));
+                .arg(qRound(zoom_ * 100));
+        constexpr int HorizontalSafeMargin = 40;
+        const int maximumWidth = qMax(1, qMin(440, surface_->width() - HorizontalSafeMargin));
+        statusDisplay_->setMaximumWidth(maximumWidth);
+        const int textWidth = maximumWidth - 20;
+        const int filenameWidth =
+            qMax(1, textWidth - statusDisplay_->fontMetrics().horizontalAdvance(
+                                    QStringLiteral(" — ") + context));
+        const QString filename = statusDisplay_->fontMetrics().elidedText(
+            QFileInfo(currentPath).fileName(), Qt::ElideMiddle, filenameWidth);
+        statusDisplay_->setText(filename + QStringLiteral(" — ") + context);
+        statusDisplay_->setToolTip(QFileInfo(currentPath).fileName());
         statusDisplay_->adjustSize();
         positionStatusDisplay();
     }
@@ -1210,12 +1256,40 @@ private:
             return;
         }
         updateStatusText();
+        statusIsFeedback_ = false;
+        statusFade_->stop();
+        statusOpacity_->setOpacity(1.0);
         statusDisplay_->show();
         statusDisplay_->raise();
         if (revealPointer) {
             viewport_->viewport()->unsetCursor();
         }
         statusTimer_->start(StatusVisibilityMilliseconds);
+    }
+
+    void hideStatus()
+    {
+        const bool reducedMotion = qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION") ||
+            style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, this) <= 0;
+        if (reducedMotion || !statusDisplay_->isVisible()) {
+            statusDisplay_->hide();
+            if (isFullScreen()) {
+                viewport_->viewport()->setCursor(Qt::BlankCursor);
+            }
+            return;
+        }
+        statusFade_->start();
+    }
+
+    void markBrowsingTeachingComplete()
+    {
+        if (browsingTeachingComplete_) {
+            return;
+        }
+        browsingTeachingComplete_ = true;
+        QSettings settings;
+        settings.setValue(QStringLiteral("teaching/browsingComplete"), true);
+        settings.sync();
     }
 
     void openDirectoryBacked(const QString &path)
@@ -1401,6 +1475,8 @@ private:
             const QString feedback = pendingFeedback_;
             pendingFeedback_.clear();
             showFeedback(feedback);
+        } else if (!browsingTeachingComplete_) {
+            showFeedback(tr("← → Browse · Right-click for commands"));
         }
     }
 
@@ -1542,6 +1618,7 @@ private:
         }
         renderImage();
         scheduleCenterView();
+        showStatus(false);
     }
 
     void renderImage()
@@ -1691,17 +1768,25 @@ private:
                              : tr("End of folder"));
             return;
         }
+        markBrowsingTeachingComplete();
         displaySelectedImage(false);
     }
 
     void showFeedback(const QString &message)
     {
+        if (!statusVisible_) {
+            return;
+        }
+        statusIsFeedback_ = true;
+        statusFade_->stop();
+        statusOpacity_->setOpacity(1.0);
         statusDisplay_->setText(message);
+        statusDisplay_->setMaximumWidth(qMax(1, qMin(440, surface_->width() - 40)));
         statusDisplay_->adjustSize();
         positionStatusDisplay();
         statusDisplay_->show();
         statusDisplay_->raise();
-        statusTimer_->start(1500);
+        statusTimer_->start(FeedbackVisibilityMilliseconds);
     }
 
     void showEmptyState()
@@ -1793,6 +1878,8 @@ private:
     QString pendingLargeImagePath_;
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
+    QGraphicsOpacityEffect *statusOpacity_ = nullptr;
+    QPropertyAnimation *statusFade_ = nullptr;
     QWidget *dropOverlay_ = nullptr;
     QLabel *dropLabel_ = nullptr;
     PresentationState presentationState_ = PresentationState::Empty;
@@ -1812,6 +1899,9 @@ private:
     QPointF lastDragPosition_;
     QColor viewportBackground_{QStringLiteral("#181A1B")};
     bool statusVisible_ = true;
+    bool statusIsFeedback_ = false;
+    bool browsingTeachingComplete_ = false;
+    bool fullscreenTeachingComplete_ = false;
     bool restoreWindowGeometry_ = false;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
     QList<QAction *> imageActions_;
