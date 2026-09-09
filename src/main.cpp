@@ -23,7 +23,6 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QFutureWatcher>
 #include <QHash>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -50,7 +49,6 @@
 #include <QSettings>
 #include <QSet>
 #include <QSpinBox>
-#include <QThread>
 #include <QTimer>
 #include <QToolButton>
 #include <QTransform>
@@ -58,7 +56,6 @@
 #include <QWidget>
 #include <QWheelEvent>
 #include <QWindow>
-#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
@@ -143,6 +140,7 @@ class ViewerWindow final : public QWidget
 public:
     ViewerWindow(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices)
         : platformServices_(std::move(platformServices))
+        , imageLoader_(this)
     {
         setWindowTitle(QStringLiteral("Flick"));
         setMinimumSize(480, 320);
@@ -245,6 +243,23 @@ public:
         });
         loadSettings();
 
+        imageLoader_.setLoadedHandler([this](const LoadedImage &loaded) {
+            insertCache(loaded.path, loaded);
+        });
+        imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
+            if (const auto *confirmation =
+                    std::get_if<ImageLoading::ConfirmationRequired>(&outcome)) {
+                showLargeImageWarning(*confirmation);
+                return;
+            }
+            if (const auto *loaded = std::get_if<LoadedImage>(&outcome)) {
+                present(loaded->path, *loaded);
+                prefetchNeighbors();
+                return;
+            }
+            showDecodeError(std::get<ImageLoading::DecodeFailure>(outcome));
+        });
+
         emptyState_ = new QLabel(tr("No image open"));
         emptyState_->setAlignment(Qt::AlignCenter);
         emptyState_->setAccessibleName(tr("No image open"));
@@ -332,7 +347,7 @@ public:
 
     bool isLoading() const
     {
-        return decodesInFlight_.contains(requestedPath_);
+        return imageLoader_.isLoading(requestedPath_);
     }
 
     void displayConfigurationChanged()
@@ -367,7 +382,7 @@ public:
 
     qsizetype decodesInFlight() const
     {
-        return decodesInFlight_.size();
+        return imageLoader_.requestsInFlight();
     }
 
     int decodeCount(const QString &path) const
@@ -1186,6 +1201,7 @@ private:
         rotationQuarterTurns_ = 0;
         currentIndex_ = index;
         requestedPath_ = sequence_.at(index);
+        imageLoader_.setCurrentPath(requestedPath_);
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
         }
@@ -1195,7 +1211,7 @@ private:
             prefetchNeighbors();
             return;
         }
-        decode(requestedPath_);
+        requestDecode(requestedPath_);
     }
 
     void retryCurrentImage()
@@ -1209,7 +1225,7 @@ private:
         }
         errorState_->hide();
         dismissLargeImageWarning();
-        decode(requestedPath_);
+        retryDecode(requestedPath_);
     }
 
     void approveLargeImage()
@@ -1217,7 +1233,7 @@ private:
         const QString approvedPath = pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (!approvedPath.isEmpty() && requestedPath_ == approvedPath) {
-            decode(approvedPath, true);
+            retryDecode(approvedPath, true);
         }
     }
 
@@ -1301,6 +1317,7 @@ private:
 
         currentIndex_ = -1;
         requestedPath_.clear();
+        imageLoader_.setCurrentPath({});
         if (sequence_.isEmpty()) {
             currentImage_ = {};
             image_ = {};
@@ -1504,61 +1521,53 @@ private:
         }
     }
 
-    void decode(const QString &path, const bool approvedLargeImage = false)
+    ImageLoading::DecodeRequest decodeRequest(const QString &path,
+                                              const bool approvedLargeImage = false) const
     {
-        if (path.isEmpty() || cache_.contains(path) || decodesInFlight_.contains(path)) {
-            return;
-        }
-        decodesInFlight_.insert(path);
 #ifdef FLICK_ENABLE_TEST_HARNESS
-        ++decodeCounts_[path];
-        const int delayMilliseconds = qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
         const qint64 configuredAllocationLimit =
             qEnvironmentVariableIntValue("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES");
         const qint64 allocationLimit = configuredAllocationLimit > 0
                                            ? configuredAllocationLimit
                                            : LargeImageAllocationLimit;
 #else
-        constexpr int delayMilliseconds = 0;
         constexpr qint64 allocationLimit = LargeImageAllocationLimit;
 #endif
-        auto *watcher = new QFutureWatcher<ImageLoading::DecodeOutcome>(this);
-        QObject::connect(watcher, &QFutureWatcher<ImageLoading::DecodeOutcome>::finished, this,
-                         [this, watcher, path] {
-                             const ImageLoading::DecodeOutcome outcome = watcher->result();
-                             watcher->deleteLater();
-                             decodesInFlight_.remove(path);
-                             if (const auto *confirmation =
-                                     std::get_if<ImageLoading::ConfirmationRequired>(&outcome)) {
-                                 if (requestedPath_ == confirmation->path) {
-                                     showLargeImageWarning(*confirmation);
-                                 }
-                                 return;
-                             }
-                             if (const auto *loaded =
-                                     std::get_if<ImageLoading::LoadedImage>(&outcome)) {
-                                 insertCache(loaded->path, *loaded);
-                                 if (requestedPath_ == loaded->path) {
-                                     present(loaded->path, *loaded);
-                                     prefetchNeighbors();
-                                 }
-                                 return;
-                             }
-                             const auto &failure =
-                                 std::get<ImageLoading::DecodeFailure>(outcome);
-                             if (requestedPath_ == failure.path) {
-                                 showDecodeError(failure);
-                             }
-                         });
-        watcher->setFuture(
-            QtConcurrent::run([path, delayMilliseconds, approvedLargeImage, allocationLimit] {
+        return {path, approvedLargeImage, allocationLimit};
+    }
+
+    void recordScheduledDecode(const QString &path, const bool scheduled)
+    {
 #ifdef FLICK_ENABLE_TEST_HARNESS
-            if (delayMilliseconds > 0) {
-                QThread::msleep(static_cast<unsigned long>(delayMilliseconds));
-            }
+        if (scheduled) {
+            ++decodeCounts_[path];
+        }
+#else
+        Q_UNUSED(path)
+        Q_UNUSED(scheduled)
 #endif
-            return ImageLoading::decode({path, approvedLargeImage, allocationLimit});
-            }));
+    }
+
+    void requestDecode(const QString &path)
+    {
+        if (!path.isEmpty() && !cache_.contains(path)) {
+            recordScheduledDecode(path, imageLoader_.request(decodeRequest(path)));
+        }
+    }
+
+    void retryDecode(const QString &path, const bool approvedLargeImage = false)
+    {
+        if (!path.isEmpty() && !cache_.contains(path)) {
+            recordScheduledDecode(
+                path, imageLoader_.retry(decodeRequest(path, approvedLargeImage)));
+        }
+    }
+
+    void prefetchDecode(const QString &path)
+    {
+        if (!path.isEmpty() && !cache_.contains(path)) {
+            recordScheduledDecode(path, imageLoader_.prefetch(decodeRequest(path)));
+        }
     }
 
     struct CacheEntry
@@ -1590,7 +1599,7 @@ private:
     {
         for (const int neighbor : {currentIndex_ - 1, currentIndex_ + 1}) {
             if (neighbor >= 0 && neighbor < sequence_.size()) {
-                decode(sequence_.at(neighbor));
+                prefetchDecode(sequence_.at(neighbor));
             }
         }
     }
@@ -1657,6 +1666,7 @@ private:
 
     QImage image_;
     std::unique_ptr<PlatformServices> platformServices_;
+    ImageLoading::Loader imageLoader_;
     ImageCanvas *imageLabel_ = nullptr;
     QScrollArea *viewport_ = nullptr;
     QLabel *boundaryMessage_ = nullptr;
@@ -1690,7 +1700,6 @@ private:
     bool dragging_ = false;
     QPointF lastDragPosition_;
     QHash<QString, CacheEntry> cache_;
-    QSet<QString> decodesInFlight_;
     qsizetype cachedBytes_ = 0;
     qsizetype cacheBudgetBytes_ = DefaultCacheBudgetBytes;
     QColor viewportBackground_{QStringLiteral("#202020")};

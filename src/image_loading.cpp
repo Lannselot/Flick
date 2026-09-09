@@ -4,14 +4,32 @@
 
 #include <QColorSpace>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QImageReader>
+#include <QSet>
+#include <QThread>
 #include <QtEndian>
+#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <limits>
 
 namespace {
 constexpr qint64 LargeImagePixelLimit = 100'000'000;
+
+int testDecodeDelayMilliseconds(const QString &path)
+{
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    const QString delayedPath = qEnvironmentVariable("FLICK_TEST_DECODE_DELAY_PATH");
+    if (!delayedPath.isEmpty() && delayedPath != path) {
+        return 0;
+    }
+    return qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
+#else
+    Q_UNUSED(path)
+    return 0;
+#endif
+}
 
 struct AnimationMetadata
 {
@@ -209,6 +227,112 @@ DecodeOutcome decode(const DecodeRequest &request)
         return DecodeFailure{request.path, reader.errorString()};
     }
     return loaded;
+}
+
+class Loader::Impl
+{
+public:
+    explicit Impl(Loader *owner)
+        : owner(owner)
+    {
+    }
+
+    bool schedule(const DecodeRequest &request, const bool makeCurrent)
+    {
+        if (request.path.isEmpty()) {
+            return false;
+        }
+        if (makeCurrent) {
+            currentPath = request.path;
+        }
+        if (inFlight.contains(request.path)) {
+            return false;
+        }
+        inFlight.insert(request.path);
+        auto *watcher = new QFutureWatcher<DecodeOutcome>(owner);
+        QObject::connect(watcher, &QFutureWatcher<DecodeOutcome>::finished, owner,
+                         [this, watcher] {
+                             DecodeOutcome outcome = watcher->result();
+                             watcher->deleteLater();
+                             const QString path = std::visit(
+                                 [](const auto &result) { return result.path; }, outcome);
+                             inFlight.remove(path);
+                             if (const auto *loaded = std::get_if<LoadedImage>(&outcome);
+                                 loaded && loadedHandler) {
+                                 loadedHandler(*loaded);
+                             }
+                             if (path == currentPath && outcomeHandler) {
+                                 outcomeHandler(std::move(outcome));
+                             }
+                         });
+        const int delay = testDecodeDelayMilliseconds(request.path);
+        watcher->setFuture(QtConcurrent::run([request, delay] {
+            if (delay > 0) {
+                QThread::msleep(static_cast<unsigned long>(delay));
+            }
+            return decode(request);
+        }));
+        return true;
+    }
+
+    Loader *owner;
+    QString currentPath;
+    QSet<QString> inFlight;
+    OutcomeHandler outcomeHandler;
+    LoadedHandler loadedHandler;
+};
+
+Loader::Loader(QObject *parent)
+    : QObject(parent)
+    , impl_(std::make_unique<Impl>(this))
+{
+}
+
+Loader::~Loader() = default;
+
+void Loader::setOutcomeHandler(OutcomeHandler handler)
+{
+    impl_->outcomeHandler = std::move(handler);
+}
+
+void Loader::setLoadedHandler(LoadedHandler handler)
+{
+    impl_->loadedHandler = std::move(handler);
+}
+
+void Loader::setCurrentPath(const QString &path)
+{
+    impl_->currentPath = path;
+}
+
+bool Loader::request(const DecodeRequest &request)
+{
+    return impl_->schedule(request, true);
+}
+
+bool Loader::prefetch(const DecodeRequest &request)
+{
+    return impl_->schedule(request, false);
+}
+
+bool Loader::retry(const DecodeRequest &request)
+{
+    return impl_->schedule(request, true);
+}
+
+bool Loader::isLoading(const QString &path) const
+{
+    return impl_->inFlight.contains(path);
+}
+
+bool Loader::hasRequestsInFlight() const
+{
+    return !impl_->inFlight.isEmpty();
+}
+
+qsizetype Loader::requestsInFlight() const
+{
+    return impl_->inFlight.size();
 }
 
 } // namespace ImageLoading

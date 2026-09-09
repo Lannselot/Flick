@@ -7,10 +7,11 @@ qt_add_executable(image_loading_test
     ${PROJECT_SOURCE_DIR}/src/image_loading.h
 )
 target_include_directories(image_loading_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(image_loading_test PRIVATE Qt6::Gui Qt6::Test)
+target_link_libraries(image_loading_test PRIVATE Qt6::Concurrent Qt6::Gui Qt6::Test)
 target_compile_options(image_loading_test PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(image_loading_test PRIVATE
     FLICK_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    FLICK_ENABLE_TEST_HARNESS
 )
 add_test(NAME flick.image-loading COMMAND image_loading_test)
 

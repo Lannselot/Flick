@@ -6,9 +6,15 @@ retry, and stale-result decisions.
 
 **Blocked by:** 01 — Introduce tested decode outcomes.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Direct tests deterministically exercise concurrent requests, duplicate suppression, stale completion, retry, and cancellation-by-obsolescence.
-- [ ] Rapid navigation cannot allow an older completion to replace the current image.
-- [ ] Loading, warning, failure, and success outcomes still drive the existing visible states.
-- [ ] Responsiveness and process-level decode tests pass without weaker assertions or increased timeouts.
+- [x] Direct tests deterministically exercise concurrent requests, duplicate suppression, stale completion, retry, and cancellation-by-obsolescence.
+- [x] Rapid navigation cannot allow an older completion to replace the current image.
+- [x] Loading, warning, failure, and success outcomes still drive the existing visible states.
+- [x] Responsiveness and process-level decode tests pass without weaker assertions or increased timeouts.
+
+## Comments
+
+Implemented by moving scheduling, in-flight suppression, current-request tracking, retry, and stale
+completion filtering into `ImageLoading::Loader`. The existing process behavior remains the
+compatibility boundary; the full Linux CTest suite passes.
