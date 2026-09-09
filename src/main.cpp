@@ -61,7 +61,6 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
-#include <limits>
 #include <memory>
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -243,9 +242,6 @@ public:
         });
         loadSettings();
 
-        imageLoader_.setLoadedHandler([this](const LoadedImage &loaded) {
-            insertCache(loaded.path, loaded);
-        });
         imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
             if (const auto *confirmation =
                     std::get_if<ImageLoading::ConfirmationRequired>(&outcome)) {
@@ -377,7 +373,7 @@ public:
 #ifdef FLICK_ENABLE_TEST_HARNESS
     qsizetype cacheBytes() const
     {
-        return cachedBytes_;
+        return imageLoader_.cacheBytes();
     }
 
     qsizetype decodesInFlight() const
@@ -453,7 +449,7 @@ public:
         return QByteArray(wheelAction_ == WheelAction::Zoom ? "zoom" : "navigate") + '|' +
                viewportBackground_.name().toUtf8() + '|' +
                (statusVisible_ ? "visible" : "hidden") + '|' +
-               QByteArray::number(cacheBudgetBytes_) + '|' +
+               QByteArray::number(imageLoader_.cacheBudget()) + '|' +
                (restoreWindowGeometry_ ? "restore" : "forget");
     }
 
@@ -702,18 +698,19 @@ private:
             viewportBackground_ = QColor(QStringLiteral("#202020"));
         }
         statusVisible_ = settings.value(QStringLiteral("view/statusVisible"), true).toBool();
-        cacheBudgetBytes_ =
+        qsizetype cacheBudgetBytes =
             settings.value(QStringLiteral("cache/budgetBytes"), DefaultCacheBudgetBytes)
                 .toLongLong();
 #ifdef FLICK_ENABLE_TEST_HARNESS
         const qint64 testBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
         if (testBudget > 0) {
-            cacheBudgetBytes_ = testBudget;
+            cacheBudgetBytes = testBudget;
         }
 #endif
-        if (cacheBudgetBytes_ <= 0) {
-            cacheBudgetBytes_ = DefaultCacheBudgetBytes;
+        if (cacheBudgetBytes <= 0) {
+            cacheBudgetBytes = DefaultCacheBudgetBytes;
         }
+        imageLoader_.setCacheBudget(cacheBudgetBytes);
         restoreWindowGeometry_ =
             settings.value(QStringLiteral("window/restoreGeometry"), false).toBool();
         applyViewportBackground();
@@ -732,30 +729,6 @@ private:
         viewport_->viewport()->setPalette(palette);
     }
 
-    bool evictLeastRecentlyUsed()
-    {
-        QString oldestPath;
-        quint64 oldestUse = std::numeric_limits<quint64>::max();
-        for (auto it = cache_.cbegin(); it != cache_.cend(); ++it) {
-            if (it.value().lastUse < oldestUse && it.key() != requestedPath_) {
-                oldestPath = it.key();
-                oldestUse = it.value().lastUse;
-            }
-        }
-        if (oldestPath.isEmpty()) {
-            return false;
-        }
-        cachedBytes_ -= cache_.value(oldestPath).decoded.sizeInBytes();
-        cache_.remove(oldestPath);
-        return true;
-    }
-
-    void trimCacheToBudget()
-    {
-        while (cachedBytes_ > cacheBudgetBytes_ && evictLeastRecentlyUsed()) {
-        }
-    }
-
     void applySettings(const WheelAction wheelAction, const QColor &background,
                        const bool statusVisible, const qsizetype cacheBudgetBytes,
                        const bool restoreWindowGeometry)
@@ -763,7 +736,7 @@ private:
         setWheelAction(wheelAction);
         viewportBackground_ = background.isValid() ? background : QColor(QStringLiteral("#202020"));
         statusVisible_ = statusVisible;
-        cacheBudgetBytes_ = std::max<qsizetype>(1024 * 1024, cacheBudgetBytes);
+        imageLoader_.setCacheBudget(std::max<qsizetype>(1024 * 1024, cacheBudgetBytes));
         restoreWindowGeometry_ = restoreWindowGeometry;
         if (!statusVisible_) {
             statusTimer_->stop();
@@ -772,11 +745,10 @@ private:
             showStatus(false);
         }
         applyViewportBackground();
-        trimCacheToBudget();
         QSettings settings;
         settings.setValue(QStringLiteral("view/background"), viewportBackground_.name());
         settings.setValue(QStringLiteral("view/statusVisible"), statusVisible_);
-        settings.setValue(QStringLiteral("cache/budgetBytes"), cacheBudgetBytes_);
+        settings.setValue(QStringLiteral("cache/budgetBytes"), imageLoader_.cacheBudget());
         settings.setValue(QStringLiteral("window/restoreGeometry"), restoreWindowGeometry_);
         if (!restoreWindowGeometry_) {
             settings.remove(QStringLiteral("window/geometry"));
@@ -814,7 +786,7 @@ private:
         QSpinBox cache;
         cache.setRange(1, 16384);
         cache.setSuffix(tr(" MB"));
-        cache.setValue(static_cast<int>(cacheBudgetBytes_ / (1024 * 1024)));
+        cache.setValue(static_cast<int>(imageLoader_.cacheBudget() / (1024 * 1024)));
         QCheckBox geometry(tr("Restore window size and position"));
         geometry.setChecked(restoreWindowGeometry_);
         layout.addRow(tr("Mouse wheel:"), &wheel);
@@ -1205,12 +1177,6 @@ private:
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
         }
-        if (cache_.contains(requestedPath_)) {
-            touch(requestedPath_);
-            present(requestedPath_, cache_.value(requestedPath_).decoded);
-            prefetchNeighbors();
-            return;
-        }
         requestDecode(requestedPath_);
     }
 
@@ -1218,10 +1184,6 @@ private:
     {
         if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
             return;
-        }
-        if (cache_.contains(requestedPath_)) {
-            cachedBytes_ -= cache_.value(requestedPath_).decoded.sizeInBytes();
-            cache_.remove(requestedPath_);
         }
         errorState_->hide();
         dismissLargeImageWarning();
@@ -1550,57 +1512,32 @@ private:
 
     void requestDecode(const QString &path)
     {
-        if (!path.isEmpty() && !cache_.contains(path)) {
+        if (!path.isEmpty()) {
             recordScheduledDecode(path, imageLoader_.request(decodeRequest(path)));
         }
     }
 
     void retryDecode(const QString &path, const bool approvedLargeImage = false)
     {
-        if (!path.isEmpty() && !cache_.contains(path)) {
+        if (!path.isEmpty()) {
             recordScheduledDecode(
                 path, imageLoader_.retry(decodeRequest(path, approvedLargeImage)));
         }
     }
 
-    void prefetchDecode(const QString &path)
-    {
-        if (!path.isEmpty() && !cache_.contains(path)) {
-            recordScheduledDecode(path, imageLoader_.prefetch(decodeRequest(path)));
-        }
-    }
-
-    struct CacheEntry
-    {
-        LoadedImage decoded;
-        quint64 lastUse = 0;
-    };
-
-    void touch(const QString &path)
-    {
-        cache_[path].lastUse = ++accessCounter_;
-    }
-
-    void insertCache(const QString &path, const LoadedImage &decoded)
-    {
-        const qsizetype bytes = decoded.sizeInBytes();
-        if (bytes > cacheBudgetBytes_) {
-            return;
-        }
-        if (cache_.contains(path)) {
-            cachedBytes_ -= cache_.value(path).decoded.sizeInBytes();
-        }
-        cache_.insert(path, CacheEntry{decoded, ++accessCounter_});
-        cachedBytes_ += bytes;
-        trimCacheToBudget();
-    }
-
     void prefetchNeighbors()
     {
-        for (const int neighbor : {currentIndex_ - 1, currentIndex_ + 1}) {
-            if (neighbor >= 0 && neighbor < sequence_.size()) {
-                prefetchDecode(sequence_.at(neighbor));
+        const auto requestAt = [this](const int index)
+            -> std::optional<ImageLoading::DecodeRequest> {
+            if (index < 0 || index >= sequence_.size()) {
+                return std::nullopt;
             }
+            return decodeRequest(sequence_.at(index));
+        };
+        const QList<QString> scheduled = imageLoader_.prefetchAdjacent(
+            requestAt(currentIndex_ - 1), requestAt(currentIndex_ + 1));
+        for (const QString &path : scheduled) {
+            recordScheduledDecode(path, true);
         }
     }
 
@@ -1699,14 +1636,10 @@ private:
     int rotationQuarterTurns_ = 0;
     bool dragging_ = false;
     QPointF lastDragPosition_;
-    QHash<QString, CacheEntry> cache_;
-    qsizetype cachedBytes_ = 0;
-    qsizetype cacheBudgetBytes_ = DefaultCacheBudgetBytes;
     QColor viewportBackground_{QStringLiteral("#202020")};
     bool statusVisible_ = true;
     bool restoreWindowGeometry_ = false;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
-    quint64 accessCounter_ = 0;
     QList<QAction *> imageActions_;
     QString informationText_;
 #if defined(Q_OS_MACOS)

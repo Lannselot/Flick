@@ -5,6 +5,7 @@
 #include <QColorSpace>
 #include <QFile>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QImageReader>
 #include <QSet>
 #include <QThread>
@@ -245,6 +246,13 @@ public:
         if (makeCurrent) {
             currentPath = request.path;
         }
+        if (cache.contains(request.path)) {
+            touch(request.path);
+            if (makeCurrent && outcomeHandler) {
+                outcomeHandler(cache.value(request.path).image);
+            }
+            return false;
+        }
         if (inFlight.contains(request.path)) {
             return false;
         }
@@ -258,8 +266,11 @@ public:
                                  [](const auto &result) { return result.path; }, outcome);
                              inFlight.remove(path);
                              if (const auto *loaded = std::get_if<LoadedImage>(&outcome);
-                                 loaded && loadedHandler) {
-                                 loadedHandler(*loaded);
+                                 loaded) {
+                                 insert(*loaded);
+                                 if (loadedHandler) {
+                                     loadedHandler(*loaded);
+                                 }
                              }
                              if (path == currentPath && outcomeHandler) {
                                  outcomeHandler(std::move(outcome));
@@ -275,9 +286,70 @@ public:
         return true;
     }
 
+    struct CacheEntry
+    {
+        LoadedImage image;
+        quint64 lastUse = 0;
+    };
+
+    void touch(const QString &path)
+    {
+        cache[path].lastUse = ++accessCounter;
+    }
+
+    bool evictLeastRecentlyUsed()
+    {
+        QString oldestPath;
+        quint64 oldestUse = std::numeric_limits<quint64>::max();
+        for (auto it = cache.cbegin(); it != cache.cend(); ++it) {
+            if (it.key() != currentPath && it.value().lastUse < oldestUse) {
+                oldestPath = it.key();
+                oldestUse = it.value().lastUse;
+            }
+        }
+        if (oldestPath.isEmpty()) {
+            return false;
+        }
+        cachedBytes -= cache.value(oldestPath).image.sizeInBytes();
+        cache.remove(oldestPath);
+        return true;
+    }
+
+    void trim()
+    {
+        while (cachedBytes > cacheBudgetBytes && evictLeastRecentlyUsed()) {
+        }
+    }
+
+    void insert(const LoadedImage &image)
+    {
+        const qsizetype bytes = image.sizeInBytes();
+        if (bytes > cacheBudgetBytes) {
+            return;
+        }
+        if (cache.contains(image.path)) {
+            cachedBytes -= cache.value(image.path).image.sizeInBytes();
+        }
+        cache.insert(image.path, CacheEntry{image, ++accessCounter});
+        cachedBytes += bytes;
+        trim();
+    }
+
+    void remove(const QString &path)
+    {
+        if (cache.contains(path)) {
+            cachedBytes -= cache.value(path).image.sizeInBytes();
+            cache.remove(path);
+        }
+    }
+
     Loader *owner;
     QString currentPath;
     QSet<QString> inFlight;
+    QHash<QString, CacheEntry> cache;
+    qsizetype cachedBytes = 0;
+    qsizetype cacheBudgetBytes = 512LL * 1024 * 1024;
+    quint64 accessCounter = 0;
     OutcomeHandler outcomeHandler;
     LoadedHandler loadedHandler;
 };
@@ -303,6 +375,23 @@ void Loader::setLoadedHandler(LoadedHandler handler)
 void Loader::setCurrentPath(const QString &path)
 {
     impl_->currentPath = path;
+    impl_->trim();
+}
+
+void Loader::setCacheBudget(const qsizetype bytes)
+{
+    impl_->cacheBudgetBytes = std::max<qsizetype>(0, bytes);
+    impl_->trim();
+}
+
+qsizetype Loader::cacheBudget() const
+{
+    return impl_->cacheBudgetBytes;
+}
+
+qsizetype Loader::cacheBytes() const
+{
+    return impl_->cachedBytes;
 }
 
 bool Loader::request(const DecodeRequest &request)
@@ -315,8 +404,21 @@ bool Loader::prefetch(const DecodeRequest &request)
     return impl_->schedule(request, false);
 }
 
+QList<QString> Loader::prefetchAdjacent(const std::optional<DecodeRequest> &previous,
+                                        const std::optional<DecodeRequest> &next)
+{
+    QList<QString> scheduledPaths;
+    for (const std::optional<DecodeRequest> &candidate : {previous, next}) {
+        if (candidate && prefetch(*candidate)) {
+            scheduledPaths.append(candidate->path);
+        }
+    }
+    return scheduledPaths;
+}
+
 bool Loader::retry(const DecodeRequest &request)
 {
+    impl_->remove(request.path);
     return impl_->schedule(request, true);
 }
 

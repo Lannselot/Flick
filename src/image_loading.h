@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <variant>
 
 namespace ImageLoading {
@@ -63,8 +64,13 @@ public:
     void setOutcomeHandler(OutcomeHandler handler);
     void setLoadedHandler(LoadedHandler handler);
     void setCurrentPath(const QString &path);
+    void setCacheBudget(qsizetype bytes);
+    qsizetype cacheBudget() const;
+    qsizetype cacheBytes() const;
     bool request(const DecodeRequest &request);
     bool prefetch(const DecodeRequest &request);
+    QList<QString> prefetchAdjacent(const std::optional<DecodeRequest> &previous,
+                                    const std::optional<DecodeRequest> &next);
     bool retry(const DecodeRequest &request);
     bool isLoading(const QString &path) const;
     bool hasRequestsInFlight() const;
