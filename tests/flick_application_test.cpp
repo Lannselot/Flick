@@ -27,6 +27,9 @@ private slots:
     void displaysPngInTopLevelWindow();
     void displaysJpegInTopLevelWindow();
     void displaysStableEmptyStateWithoutImage();
+    void presentsCoherentEmptyErrorAndLargeImageStates();
+    void delaysLoadingPresentationAndClearsPreviousImage();
+    void validDragFeedbackRestoresThePreviousPresentation();
     void separateInvocationsRemainIndependent();
     void browsesNaturallySortedVisibleSupportedImages();
     void opensSelectedImageWithCtrlO();
@@ -160,6 +163,7 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     environment.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
     environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), flick.screenshotPath);
     environment.insert(QStringLiteral("FLICK_TEST_FILE_PICKER_SELECTION"), pickerSelection);
+    environment.insert(QStringLiteral("FLICK_TEST_REDUCED_MOTION"), QStringLiteral("1"));
     if (decodeDelayMilliseconds > 0) {
         environment.insert(QStringLiteral("FLICK_TEST_DECODE_DELAY_MS"),
                            QString::number(decodeDelayMilliseconds));
@@ -339,6 +343,84 @@ void FlickApplicationTest::displaysStableEmptyStateWithoutImage()
     QCOMPARE(screenshot.size(), QSize(480, 320));
     QVERIFY(!containsColor(screenshot, PngFixtureColor));
     QVERIFY(!containsColor(screenshot, JpegFixtureColor, JpegColorTolerance));
+}
+
+void FlickApplicationTest::presentsCoherentEmptyErrorAndLargeImageStates()
+{
+    RunningFlick empty;
+    start(empty);
+    waitForScreenshot(empty);
+    const QByteArray emptyState =
+        sendQueryAndWaitForReply(empty, QByteArrayLiteral("PresentationState"));
+    QVERIFY(emptyState.contains("empty|Open an image|Choose file|or drop it here"));
+    QVERIFY(emptyState.contains("Browse"));
+    sendCommand(empty, QByteArrayLiteral("Resize:800:600"));
+    QCOMPARE(sendQueryAndWaitForReply(empty, QByteArrayLiteral("PresentationState")), emptyState);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString malformedPath = directory.filePath(QStringLiteral("broken.png"));
+    QFile malformed(malformedPath);
+    QVERIFY(malformed.open(QIODevice::WriteOnly));
+    QCOMPARE(malformed.write("not a png"), 9);
+    malformed.close();
+    RunningFlick error;
+    start(error, {malformedPath});
+    waitForScreenshot(error);
+    const QByteArray errorState =
+        sendQueryAndWaitForReply(error, QByteArrayLiteral("PresentationState"));
+    QVERIFY(errorState.startsWith("error|This image could not be displayed"));
+    QVERIFY(errorState.contains("Retry|Details"));
+    QVERIFY(errorState.contains("Left and right still browse"));
+}
+
+void FlickApplicationTest::delaysLoadingPresentationAndClearsPreviousImage()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor firstColor(245, 222, 179);
+    const QString first = writeImage(directory, QStringLiteral("image1.png"), firstColor);
+    const QString second =
+        writeImage(directory, QStringLiteral("image2.png"), QColor(72, 61, 139));
+    QVERIFY(!first.isEmpty());
+    QVERIFY(!second.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {first}, {}, 700);
+    QVERIFY(containsColor(waitForScreenshot(flick), firstColor));
+
+    sendCommand(flick, QByteArrayLiteral("Right"));
+    QTest::qWait(50);
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState")),
+             QByteArrayLiteral("loading|image2.png|indicator-hidden"));
+    const QImage beforeThreshold = captureAfter(flick, 0);
+    QVERIFY(!containsColor(beforeThreshold, firstColor));
+
+    QTest::qWait(100);
+    const QByteArray loading =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState"));
+    QCOMPARE(loading, QByteArrayLiteral("loading|image2.png|indicator-visible"));
+}
+
+void FlickApplicationTest::validDragFeedbackRestoresThePreviousPresentation()
+{
+    const QString path = writeFixture(QStringLiteral("known.png.base64"),
+                                      QStringLiteral("drag-target.png"));
+    QVERIFY(!path.isEmpty());
+    RunningFlick flick;
+    start(flick, {path});
+    const QImage displayed = waitForScreenshot(flick);
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("BeginDrag:") + path.toUtf8());
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState")),
+             QByteArrayLiteral("drop|Drop to open"));
+    const QImage dragFeedback = captureAfter(flick, 0);
+    QVERIFY(dragFeedback != displayed);
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("LeaveDrag"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState")),
+             QByteArrayLiteral("displayed"));
+    QCOMPARE(captureAfter(flick, 0), displayed);
 }
 
 void FlickApplicationTest::separateInvocationsRemainIndependent()
@@ -726,7 +808,13 @@ void FlickApplicationTest::extremeDimensionsRequireConfirmationBeforeBackgroundD
         sendQueryAndWaitForReply(rejected, QByteArrayLiteral("LargeImageState")).split('|');
     QCOMPARE(warning.at(0), QByteArrayLiteral("visible"));
     QCOMPARE(warning.at(1), QByteArrayLiteral("20000x10000"));
-    sendCommandAndWaitForScreenshot(rejected, QByteArrayLiteral("RejectLarge"));
+    const QByteArray warningPresentation =
+        sendQueryAndWaitForReply(rejected, QByteArrayLiteral("PresentationState"));
+    QVERIFY(warningPresentation.contains("20000 × 10000"));
+    QVERIFY(warningPresentation.endsWith("Open anyway|Skip"));
+    sendCommandAndWaitForScreenshot(rejected, QByteArrayLiteral("Escape"));
+    QVERIFY(sendQueryAndWaitForReply(rejected, QByteArrayLiteral("PresentationState"))
+                .startsWith("empty|"));
     QCOMPARE(sendQueryAndWaitForReply(rejected,
                                       QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
              QByteArrayLiteral("1"));
@@ -737,6 +825,8 @@ void FlickApplicationTest::extremeDimensionsRequireConfirmationBeforeBackgroundD
     QElapsedTimer responsiveness;
     responsiveness.start();
     sendCommand(approved, QByteArrayLiteral("ApproveLarge"));
+    QCOMPARE(sendQueryAndWaitForReply(approved, QByteArrayLiteral("PresentationState")),
+             QByteArrayLiteral("loading|extreme.bmp|indicator-hidden"));
     sendCommandAndWaitForScreenshot(approved, QByteArrayLiteral("Capture"));
     QVERIFY2(responsiveness.elapsed() < 500, "approved large-image decode blocked the UI thread");
     QTRY_COMPARE_WITH_TIMEOUT(

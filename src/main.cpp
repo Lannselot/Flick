@@ -32,6 +32,7 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QFormLayout>
+#include <QGraphicsOpacityEffect>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLocale>
@@ -43,12 +44,15 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
+#include <QPropertyAnimation>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QScreen>
 #include <QSettings>
 #include <QSet>
 #include <QSpinBox>
+#include <QStackedLayout>
+#include <QStyle>
 #include <QTimer>
 #include <QToolButton>
 #include <QTransform>
@@ -75,6 +79,7 @@ constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 constexpr int StatusVisibilityMilliseconds = 2000;
 constexpr int KeyboardPanStep = 40;
 constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
+constexpr int LoadingIndicatorDelayMilliseconds = 120;
 
 enum class WheelAction
 {
@@ -101,6 +106,14 @@ public:
         image_ = image;
         displayedSize_ = displayedSize;
         setFixedSize(displayedSize + viewportSize);
+        update();
+    }
+
+    void clearImage()
+    {
+        image_ = {};
+        displayedSize_ = {};
+        setFixedSize(QSize());
         update();
     }
 
@@ -136,6 +149,15 @@ private:
 
 class ViewerWindow final : public QWidget
 {
+    enum class PresentationState
+    {
+        Empty,
+        Loading,
+        Displayed,
+        Error,
+        LargeImageConfirmation
+    };
+
 public:
     ViewerWindow(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices)
         : platformServices_(std::move(platformServices))
@@ -147,6 +169,15 @@ public:
 
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
+        surface_ = new QWidget;
+        surface_->setObjectName(QStringLiteral("viewingSurface"));
+        surface_->setAutoFillBackground(true);
+        QPalette surfacePalette = surface_->palette();
+        surfacePalette.setColor(QPalette::Window, QColor(QStringLiteral("#181A1B")));
+        surface_->setPalette(surfacePalette);
+        surfaceStack_ = new QStackedLayout(surface_);
+        surfaceStack_->setContentsMargins(0, 0, 0, 0);
+        surfaceStack_->setSpacing(0);
 
         imageLabel_ = new ImageCanvas;
         imageLabel_->setObjectName(QStringLiteral("imageLabel"));
@@ -202,13 +233,6 @@ public:
         });
         setFocusPolicy(Qt::StrongFocus);
 
-        boundaryMessage_ = new QLabel;
-        boundaryMessage_->setAlignment(Qt::AlignCenter);
-        boundaryMessage_->setAccessibleName(tr("Sequence boundary message"));
-        boundaryMessage_->hide();
-        boundaryTimer_ = new QTimer(this);
-        boundaryTimer_->setSingleShot(true);
-        QObject::connect(boundaryTimer_, &QTimer::timeout, boundaryMessage_, &QWidget::hide);
         animationTimer_ = new QTimer(this);
         animationTimer_->setSingleShot(true);
         QObject::connect(animationTimer_, &QTimer::timeout, this, [this] {
@@ -220,7 +244,7 @@ public:
                              refreshDirectorySequence();
                          });
 
-        statusDisplay_ = new QLabel(viewport_->viewport());
+        statusDisplay_ = new QLabel(surface_);
         statusDisplay_->setAlignment(Qt::AlignCenter);
         statusDisplay_->setAccessibleName(tr("Image status"));
         statusDisplay_->setAccessibleDescription(
@@ -242,7 +266,17 @@ public:
         });
         loadSettings();
 
+        loadingTimer_ = new QTimer(this);
+        loadingTimer_->setSingleShot(true);
+        QObject::connect(loadingTimer_, &QTimer::timeout, this, [this] {
+            if (imageLoader_.isLoading(browsingSequence_.selectedPath())) {
+                loadingIndicator_->show();
+                loadingFilename_->show();
+            }
+        });
+
         imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
+            loadingTimer_->stop();
             if (const auto *confirmation =
                     std::get_if<ImageLoading::ConfirmationRequired>(&outcome)) {
                 showLargeImageWarning(*confirmation);
@@ -256,19 +290,56 @@ public:
             showDecodeError(std::get<ImageLoading::DecodeFailure>(outcome));
         });
 
-        emptyState_ = new QLabel(tr("No image open"));
-        emptyState_->setAlignment(Qt::AlignCenter);
-        emptyState_->setAccessibleName(tr("No image open"));
+        emptyState_ = new QWidget;
+        auto *emptyLayout = new QVBoxLayout(emptyState_);
+        emptyLayout->setAlignment(Qt::AlignCenter);
+        auto *emptyMark = new QLabel(tr("Flick"));
+        auto *emptyTitle = new QLabel(tr("Open an image"));
+        auto *chooseFile = new QPushButton(tr("Choose file"));
+        auto *dropHint = new QLabel(tr("or drop it here"));
+        auto *teaching = new QLabel(tr("← → Browse · Wheel Navigate · Right-click Commands"));
+        emptyMark->setAlignment(Qt::AlignCenter);
+        emptyTitle->setAlignment(Qt::AlignCenter);
+        dropHint->setAlignment(Qt::AlignCenter);
+        teaching->setAlignment(Qt::AlignCenter);
+        emptyState_->setAccessibleName(tr("Open an image"));
+        chooseFile->setAccessibleDescription(tr("Choose a local image to display."));
+        QObject::connect(chooseFile, &QPushButton::clicked, this, [this] { openFromFilePicker(); });
+        emptyLayout->addWidget(emptyMark, 0, Qt::AlignHCenter);
+        emptyLayout->addWidget(emptyTitle, 0, Qt::AlignHCenter);
+        emptyLayout->addSpacing(8);
+        emptyLayout->addWidget(chooseFile, 0, Qt::AlignHCenter);
+        emptyLayout->addWidget(dropHint, 0, Qt::AlignHCenter);
+        emptyLayout->addSpacing(8);
+        emptyLayout->addWidget(teaching, 0, Qt::AlignHCenter);
+
+        loadingState_ = new QWidget;
+        auto *loadingLayout = new QVBoxLayout(loadingState_);
+        loadingLayout->setAlignment(Qt::AlignCenter);
+        loadingIndicator_ = new QLabel(tr("Loading…"));
+        loadingFilename_ = new QLabel;
+        loadingIndicator_->setAlignment(Qt::AlignCenter);
+        loadingFilename_->setAlignment(Qt::AlignCenter);
+        loadingState_->setAccessibleName(tr("Loading image"));
+        loadingLayout->addWidget(loadingIndicator_, 0, Qt::AlignHCenter);
+        loadingLayout->addWidget(loadingFilename_, 0, Qt::AlignHCenter);
 
         errorState_ = new QWidget;
-        auto *errorLayout = new QVBoxLayout(errorState_);
-        errorLayout->setAlignment(Qt::AlignCenter);
+        auto *errorStateLayout = new QVBoxLayout(errorState_);
+        errorStateLayout->setAlignment(Qt::AlignCenter);
+        auto *errorCard = new QWidget;
+        errorCard->setObjectName(QStringLiteral("errorCard"));
+        errorCard->setMaximumWidth(440);
+        errorCard->setStyleSheet(QStringLiteral(
+            "QWidget#errorCard { background: palette(window); border-radius: 6px; }"));
+        auto *errorLayout = new QVBoxLayout(errorCard);
+        errorLayout->setContentsMargins(20, 20, 20, 20);
         errorExplanation_ = new QLabel;
         errorExplanation_->setAlignment(Qt::AlignCenter);
         errorExplanation_->setWordWrap(true);
         errorExplanation_->setAccessibleName(tr("Image error"));
         errorDetailsButton_ = new QToolButton;
-        errorDetailsButton_->setText(tr("Technical details"));
+        errorDetailsButton_->setText(tr("Details"));
         errorDetailsButton_->setAccessibleDescription(
             tr("Shows or hides technical decoder details."));
         errorDetailsButton_->setCheckable(true);
@@ -281,25 +352,43 @@ public:
         errorDetails_->hide();
         QObject::connect(errorDetailsButton_, &QToolButton::toggled, errorDetails_,
                          &QWidget::setVisible);
+        errorRetryButton_ = new QPushButton(tr("Retry"));
+        QObject::connect(errorRetryButton_, &QPushButton::clicked, this,
+                         [this] { retryCurrentImage(); });
+        auto *errorButtons = new QWidget;
+        auto *errorButtonLayout = new QHBoxLayout(errorButtons);
+        errorButtonLayout->addWidget(errorRetryButton_);
+        errorButtonLayout->addWidget(errorDetailsButton_);
+        errorNavigationHint_ = new QLabel(tr("Left and right still browse adjacent images."));
+        errorNavigationHint_->setAlignment(Qt::AlignCenter);
         errorLayout->addWidget(errorExplanation_);
-        errorLayout->addWidget(errorDetailsButton_, 0, Qt::AlignHCenter);
+        errorLayout->addWidget(errorButtons, 0, Qt::AlignHCenter);
+        errorLayout->addWidget(errorNavigationHint_, 0, Qt::AlignHCenter);
         errorLayout->addWidget(errorDetails_);
+        errorStateLayout->addWidget(errorCard, 0, Qt::AlignCenter);
         errorState_->hide();
 
         largeImageWarning_ = new QWidget;
-        auto *warningLayout = new QVBoxLayout(largeImageWarning_);
-        warningLayout->setAlignment(Qt::AlignCenter);
+        auto *warningStateLayout = new QVBoxLayout(largeImageWarning_);
+        warningStateLayout->setAlignment(Qt::AlignCenter);
+        auto *warningCard = new QWidget;
+        warningCard->setObjectName(QStringLiteral("warningCard"));
+        warningCard->setMaximumWidth(440);
+        warningCard->setStyleSheet(QStringLiteral(
+            "QWidget#warningCard { background: palette(window); border-radius: 6px; }"));
+        auto *warningLayout = new QVBoxLayout(warningCard);
+        warningLayout->setContentsMargins(20, 20, 20, 20);
         largeImageExplanation_ = new QLabel;
         largeImageExplanation_->setAlignment(Qt::AlignCenter);
         largeImageExplanation_->setWordWrap(true);
         largeImageExplanation_->setAccessibleName(tr("Large image warning"));
         auto *warningButtons = new QWidget;
         auto *warningButtonLayout = new QHBoxLayout(warningButtons);
-        auto *approveLarge = new QPushButton(tr("Decode anyway"));
+        auto *approveLarge = new QPushButton(tr("Open anyway"));
         approveLarge->setObjectName(QStringLiteral("approveLargeImage"));
         approveLarge->setAccessibleDescription(
             tr("Allows decoding of the current exceptionally large image."));
-        auto *rejectLarge = new QPushButton(tr("Cancel"));
+        auto *rejectLarge = new QPushButton(tr("Skip"));
         rejectLarge->setObjectName(QStringLiteral("rejectLargeImage"));
         rejectLarge->setAccessibleDescription(
             tr("Cancels decoding of the current exceptionally large image."));
@@ -313,13 +402,30 @@ public:
         });
         warningLayout->addWidget(largeImageExplanation_);
         warningLayout->addWidget(warningButtons, 0, Qt::AlignHCenter);
+        warningStateLayout->addWidget(warningCard, 0, Qt::AlignCenter);
         largeImageWarning_->hide();
 
-        layout->addWidget(viewport_);
-        layout->addWidget(emptyState_);
-        layout->addWidget(errorState_);
-        layout->addWidget(largeImageWarning_);
-        layout->addWidget(boundaryMessage_);
+        surfaceStack_->addWidget(viewport_);
+        surfaceStack_->addWidget(emptyState_);
+        surfaceStack_->addWidget(loadingState_);
+        surfaceStack_->addWidget(errorState_);
+        surfaceStack_->addWidget(largeImageWarning_);
+        layout->addWidget(surface_);
+
+        dropOverlay_ = new QWidget(surface_);
+        dropOverlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
+        dropOverlay_->setStyleSheet(QStringLiteral(
+            "QWidget { background: transparent; border: 2px solid palette(highlight); } "
+            "QLabel { border: none; }"));
+        auto *dropLayout = new QVBoxLayout(dropOverlay_);
+        dropLayout->setAlignment(Qt::AlignCenter);
+        dropLabel_ = new QLabel;
+        dropLabel_->setAlignment(Qt::AlignCenter);
+        dropLabel_->setStyleSheet(QStringLiteral(
+            "QLabel { background: rgba(16, 17, 18, 230); color: white; padding: 12px 18px; "
+            "border-radius: 6px; font-weight: 600; }"));
+        dropLayout->addWidget(dropLabel_, 0, Qt::AlignCenter);
+        dropOverlay_->hide();
         showEmptyState();
 
         auto *settingsAction = new QAction(tr("Settings"), this);
@@ -413,7 +519,7 @@ public:
 
     QByteArray feedbackState() const
     {
-        return boundaryMessage_->text().toUtf8();
+        return statusDisplay_->text().toUtf8();
     }
 
     QByteArray errorState() const
@@ -479,6 +585,34 @@ public:
         return QByteArray::number(width()) + 'x' + QByteArray::number(height());
     }
 
+    QByteArray presentationState() const
+    {
+        if (dropOverlay_->isVisible()) {
+            return QByteArrayLiteral("drop|") + dropLabel_->text().toUtf8();
+        }
+        switch (presentationState_) {
+        case PresentationState::Empty:
+            return QByteArrayLiteral(
+                "empty|Open an image|Choose file|or drop it here|← → Browse · Wheel Navigate · "
+                "Right-click Commands");
+        case PresentationState::Loading:
+            return QByteArrayLiteral("loading|") + loadingFilename_->text().toUtf8() + '|' +
+                   (loadingIndicator_->isVisible() ? QByteArrayLiteral("indicator-visible")
+                                                   : QByteArrayLiteral("indicator-hidden"));
+        case PresentationState::Displayed:
+            return QByteArrayLiteral("displayed");
+        case PresentationState::Error:
+            return QByteArrayLiteral("error|") + errorExplanation_->text().toUtf8() + '|' +
+                   errorRetryButton_->text().toUtf8() + '|' +
+                   errorDetailsButton_->text().toUtf8() + '|' +
+                   errorNavigationHint_->text().toUtf8();
+        case PresentationState::LargeImageConfirmation:
+            return QByteArrayLiteral("large-image|") + largeImageExplanation_->text().toUtf8() +
+                   QByteArrayLiteral("|Open anyway|Skip");
+        }
+        return {};
+    }
+
     void applyTestSettings(const QStringList &values)
     {
         if (values.size() != 5) {
@@ -502,6 +636,15 @@ protected:
     {
         persistWindowGeometry();
         QWidget::closeEvent(event);
+    }
+
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        if (dropOverlay_) {
+            dropOverlay_->setGeometry(surface_->rect());
+        }
+        positionStatusDisplay();
     }
 
     bool eventFilter(QObject *watched, QEvent *event) override
@@ -574,6 +717,11 @@ protected:
             retryCurrentImage();
             return;
         }
+        if (event->key() == Qt::Key_Escape &&
+            presentationState_ == PresentationState::LargeImageConfirmation) {
+            rejectLargeImage();
+            return;
+        }
         if (event->key() == Qt::Key_Escape && isFullScreen()) {
             leaveFullscreen();
             return;
@@ -641,9 +789,31 @@ protected:
 
     void dragEnterEvent(QDragEnterEvent *event) override
     {
-        if (event->mimeData()->hasUrls()) {
-            event->acceptProposedAction();
+        int supportedCount = 0;
+        for (const QUrl &url : event->mimeData()->urls()) {
+            if (url.isLocalFile() && BrowsingSequence::supports(url.toLocalFile())) {
+                ++supportedCount;
+            }
         }
+        if (supportedCount == 0) {
+            if (event->mimeData()->hasUrls()) {
+                event->acceptProposedAction();
+            }
+            return;
+        }
+        dropLabel_->setText(supportedCount == 1
+                                ? tr("Drop to open")
+                                : tr("Drop to browse %1 images").arg(supportedCount));
+        dropOverlay_->setGeometry(surface_->rect());
+        dropOverlay_->show();
+        dropOverlay_->raise();
+        event->acceptProposedAction();
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        hideDropOverlay();
+        event->accept();
     }
 
     void dropEvent(QDropEvent *event) override
@@ -654,6 +824,7 @@ protected:
                 paths.append(url.toLocalFile());
             }
         }
+        hideDropOverlay();
         openDroppedPaths(paths);
         event->acceptProposedAction();
     }
@@ -692,10 +863,10 @@ private:
     {
         QSettings settings;
         viewportBackground_ =
-            QColor(settings.value(QStringLiteral("view/background"), QStringLiteral("#202020"))
+            QColor(settings.value(QStringLiteral("view/background"), QStringLiteral("#181A1B"))
                        .toString());
         if (!viewportBackground_.isValid()) {
-            viewportBackground_ = QColor(QStringLiteral("#202020"));
+            viewportBackground_ = QColor(QStringLiteral("#181A1B"));
         }
         statusVisible_ = settings.value(QStringLiteral("view/statusVisible"), true).toBool();
         qsizetype cacheBudgetBytes =
@@ -734,7 +905,7 @@ private:
                        const bool restoreWindowGeometry)
     {
         setWheelAction(wheelAction);
-        viewportBackground_ = background.isValid() ? background : QColor(QStringLiteral("#202020"));
+        viewportBackground_ = background.isValid() ? background : QColor(QStringLiteral("#181A1B"));
         statusVisible_ = statusVisible;
         imageLoader_.setCacheBudget(std::max<qsizetype>(1024 * 1024, cacheBudgetBytes));
         restoreWindowGeometry_ = restoreWindowGeometry;
@@ -1027,9 +1198,9 @@ private:
             return;
         }
         constexpr int BottomMargin = 12;
-        const QSize viewportSize = viewport_->viewport()->size();
-        statusDisplay_->move((viewportSize.width() - statusDisplay_->width()) / 2,
-                             viewportSize.height() - statusDisplay_->height() - BottomMargin);
+        const QSize surfaceSize = surface_->size();
+        statusDisplay_->move((surfaceSize.width() - statusDisplay_->width()) / 2,
+                             surfaceSize.height() - statusDisplay_->height() - BottomMargin);
         statusDisplay_->raise();
     }
 
@@ -1117,8 +1288,9 @@ private:
         openDirectoryBacked(selectedPath);
     }
 
-    void displaySelectedImage()
+    void displaySelectedImage(const bool animateDisplayed = true)
     {
+        animateDisplayedPresentation_ = animateDisplayed;
         dismissLargeImageWarning();
         rotationQuarterTurns_ = 0;
         const QString currentPath = browsingSequence_.selectedPath();
@@ -1126,6 +1298,15 @@ private:
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
         }
+        currentImage_ = {};
+        image_ = {};
+        imageLabel_->clearImage();
+        statusDisplay_->hide();
+        loadingFilename_->setText(QFileInfo(currentPath).fileName());
+        loadingIndicator_->hide();
+        loadingFilename_->hide();
+        showPresentation(loadingState_, PresentationState::Loading);
+        loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
         requestDecode(currentPath);
     }
 
@@ -1135,8 +1316,12 @@ private:
         if (currentPath.isEmpty()) {
             return;
         }
-        errorState_->hide();
         dismissLargeImageWarning();
+        loadingFilename_->setText(QFileInfo(currentPath).fileName());
+        loadingIndicator_->hide();
+        loadingFilename_->hide();
+        showPresentation(loadingState_, PresentationState::Loading);
+        loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
         retryDecode(currentPath);
     }
 
@@ -1145,6 +1330,11 @@ private:
         const QString approvedPath = pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (!approvedPath.isEmpty() && browsingSequence_.selectedPath() == approvedPath) {
+            loadingFilename_->setText(QFileInfo(approvedPath).fileName());
+            loadingIndicator_->hide();
+            loadingFilename_->hide();
+            showPresentation(loadingState_, PresentationState::Loading);
+            loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
             retryDecode(approvedPath, true);
         }
     }
@@ -1156,8 +1346,17 @@ private:
             browsingSequence_.selectedPath() == pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (rejectingCurrent) {
-            showEmptyState();
-            showFeedback(tr("Large image decode cancelled"));
+            const BrowsingSequence::AdjacentPaths adjacent = browsingSequence_.adjacentPaths();
+            if (!adjacent.next.isEmpty()) {
+                navigate(1);
+            } else if (!adjacent.previous.isEmpty()) {
+                navigate(-1);
+            } else {
+                browsingSequence_ = BrowsingSequence::explicitList({});
+                imageLoader_.setCurrentPath({});
+                showEmptyState();
+            }
+            showFeedback(tr("Large image skipped"));
         }
     }
 
@@ -1186,10 +1385,7 @@ private:
         if (currentImage_.frames.size() > 1) {
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
-        emptyState_->hide();
-        errorState_->hide();
-        largeImageWarning_->hide();
-        viewport_->show();
+        showPresentation(viewport_, PresentationState::Displayed, animateDisplayedPresentation_);
         if (path == pendingFilePickerPath_) {
             QSettings settings;
             settings.setValue(QStringLiteral("filePicker/lastDirectory"),
@@ -1201,8 +1397,6 @@ private:
             action->setEnabled(true);
         }
         setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
-        boundaryTimer_->stop();
-        boundaryMessage_->hide();
         if (!pendingFeedback_.isEmpty()) {
             const QString feedback = pendingFeedback_;
             pendingFeedback_.clear();
@@ -1238,7 +1432,7 @@ private:
         }
 
         pendingFeedback_ = tr("Current image is no longer available");
-        displaySelectedImage();
+        displaySelectedImage(false);
     }
 
     void showFrame(const int index)
@@ -1492,44 +1686,41 @@ private:
         const BrowsingSequence::MoveOutcome outcome =
             offset < 0 ? browsingSequence_.movePrevious() : browsingSequence_.moveNext();
         if (outcome != BrowsingSequence::MoveOutcome::Selected) {
-            boundaryMessage_->setText(outcome == BrowsingSequence::MoveOutcome::Beginning
-                                          ? tr("Beginning of folder")
-                                          : tr("End of folder"));
-            boundaryMessage_->show();
-            boundaryTimer_->start(1500);
+            showFeedback(outcome == BrowsingSequence::MoveOutcome::Beginning
+                             ? tr("Beginning of folder")
+                             : tr("End of folder"));
             return;
         }
-        displaySelectedImage();
+        displaySelectedImage(false);
     }
 
     void showFeedback(const QString &message)
     {
-        boundaryMessage_->setText(message);
-        boundaryMessage_->show();
-        boundaryTimer_->start(1500);
+        statusDisplay_->setText(message);
+        statusDisplay_->adjustSize();
+        positionStatusDisplay();
+        statusDisplay_->show();
+        statusDisplay_->raise();
+        statusTimer_->start(1500);
     }
 
     void showEmptyState()
     {
-        viewport_->hide();
-        errorState_->hide();
-        largeImageWarning_->hide();
-        emptyState_->show();
+        loadingTimer_->stop();
+        showPresentation(emptyState_, PresentationState::Empty);
     }
 
     void showDecodeError(const ImageLoading::DecodeFailure &failure)
     {
         animationTimer_->stop();
-        viewport_->hide();
-        emptyState_->hide();
         errorExplanation_->setText(
-            tr("%1 could not be displayed. You can retry or browse to another image.")
+            tr("This image could not be displayed\n%1")
                 .arg(QFileInfo(failure.path).fileName()));
         errorDetails_->setText(
             failure.details.isEmpty() ? tr("The image decoder returned no pixels.")
                                       : failure.details);
         errorDetailsButton_->setChecked(false);
-        errorState_->show();
+        showPresentation(errorState_, PresentationState::Error);
         setWindowTitle(tr("Flick — Error"));
     }
 
@@ -1537,9 +1728,6 @@ private:
     {
         pendingLargeImageSize_ = confirmation.declaredSize;
         pendingLargeImagePath_ = confirmation.path;
-        viewport_->hide();
-        emptyState_->hide();
-        errorState_->hide();
         largeImageExplanation_->setText(
             tr("%1 declares %2 × %3 pixels and may require about %4 MB when decoded. "
                "Decode it anyway?")
@@ -1547,29 +1735,67 @@ private:
                 .arg(confirmation.declaredSize.width())
                 .arg(confirmation.declaredSize.height())
                 .arg(confirmation.estimatedAllocationBytes / (1024 * 1024)));
-        largeImageWarning_->show();
+        showPresentation(largeImageWarning_, PresentationState::LargeImageConfirmation);
+    }
+
+    void showPresentation(QWidget *widget, const PresentationState state,
+                          const bool animate = true)
+    {
+        presentationState_ = state;
+        surfaceStack_->setCurrentWidget(widget);
+        // Qt maps the platform's reduced-motion setting to a zero widget-animation duration.
+        if (!animate || qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION") ||
+            style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, this) <= 0 ||
+            !isVisible()) {
+            return;
+        }
+        auto *effect = new QGraphicsOpacityEffect(widget);
+        widget->setGraphicsEffect(effect);
+        auto *fade = new QPropertyAnimation(effect, "opacity", widget);
+        fade->setDuration(160);
+        fade->setStartValue(0.0);
+        fade->setEndValue(1.0);
+        QObject::connect(fade, &QPropertyAnimation::finished, widget, [widget, fade] {
+            widget->setGraphicsEffect(nullptr);
+            fade->deleteLater();
+        });
+        fade->start();
+    }
+
+    void hideDropOverlay()
+    {
+        dropOverlay_->hide();
     }
 
     QImage image_;
     std::unique_ptr<PlatformServices> platformServices_;
     ImageLoading::Loader imageLoader_;
     ImageCanvas *imageLabel_ = nullptr;
+    QWidget *surface_ = nullptr;
+    QStackedLayout *surfaceStack_ = nullptr;
     QScrollArea *viewport_ = nullptr;
-    QLabel *boundaryMessage_ = nullptr;
-    QTimer *boundaryTimer_ = nullptr;
     QTimer *animationTimer_ = nullptr;
     QFileSystemWatcher *directoryWatcher_ = nullptr;
-    QLabel *emptyState_ = nullptr;
+    QWidget *emptyState_ = nullptr;
+    QWidget *loadingState_ = nullptr;
+    QLabel *loadingIndicator_ = nullptr;
+    QLabel *loadingFilename_ = nullptr;
+    QTimer *loadingTimer_ = nullptr;
     QWidget *errorState_ = nullptr;
     QLabel *errorExplanation_ = nullptr;
     QLabel *errorDetails_ = nullptr;
     QToolButton *errorDetailsButton_ = nullptr;
+    QPushButton *errorRetryButton_ = nullptr;
+    QLabel *errorNavigationHint_ = nullptr;
     QWidget *largeImageWarning_ = nullptr;
     QLabel *largeImageExplanation_ = nullptr;
     QSize pendingLargeImageSize_;
     QString pendingLargeImagePath_;
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
+    QWidget *dropOverlay_ = nullptr;
+    QLabel *dropLabel_ = nullptr;
+    PresentationState presentationState_ = PresentationState::Empty;
     BrowsingSequence browsingSequence_ = BrowsingSequence::explicitList({});
     QString pendingFilePickerPath_;
     QString pendingFeedback_;
@@ -1578,12 +1804,13 @@ private:
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
     bool animationPaused_ = false;
+    bool animateDisplayedPresentation_ = true;
     WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;
     int rotationQuarterTurns_ = 0;
     bool dragging_ = false;
     QPointF lastDragPosition_;
-    QColor viewportBackground_{QStringLiteral("#202020")};
+    QColor viewportBackground_{QStringLiteral("#181A1B")};
     bool statusVisible_ = true;
     bool restoreWindowGeometry_ = false;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
@@ -1689,6 +1916,10 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.windowGeometryState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("PresentationState")) {
+                fprintf(stdout, "%s\n", window.presentationState().constData());
+                fflush(stdout);
+                return;
             } else if (input.startsWith("SaveWindowGeometry")) {
                 window.persistWindowGeometry();
                 fprintf(stdout, "saved\n");
@@ -1789,6 +2020,17 @@ int main(int argc, char *argv[])
                                  Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(&window, &event);
                 delete mimeData;
+            } else if (input.startsWith("BeginDrag:")) {
+                auto *mimeData = new QMimeData;
+                mimeData->setUrls({QUrl::fromLocalFile(
+                    QString::fromUtf8(input.mid(10).trimmed()))});
+                QDragEnterEvent event(window.rect().center(), Qt::CopyAction, mimeData,
+                                      Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(&window, &event);
+                delete mimeData;
+            } else if (input.startsWith("LeaveDrag")) {
+                QDragLeaveEvent event;
+                QApplication::sendEvent(&window, &event);
             } else if (input.startsWith("SelectZoomWheelAction")) {
                 if (auto *action =
                         window.findChild<QAction *>(QStringLiteral("wheelZoomAction"))) {
