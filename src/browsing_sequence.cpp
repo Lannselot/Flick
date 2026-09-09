@@ -56,7 +56,8 @@ BrowsingSequence BrowsingSequence::directoryBackedCanonical(
         }
     }
     sortNaturally(paths);
-    return {Mode::DirectoryBacked, paths, int(paths.indexOf(canonicalSelection))};
+    return {Mode::DirectoryBacked, paths, int(paths.indexOf(canonicalSelection)),
+            directory.absolutePath()};
 }
 
 BrowsingSequence BrowsingSequence::explicitList(const QStringList &paths)
@@ -74,8 +75,10 @@ BrowsingSequence BrowsingSequence::explicitList(const QStringList &paths)
     return {Mode::Explicit, supportedPaths, supportedPaths.isEmpty() ? -1 : 0};
 }
 
-BrowsingSequence::BrowsingSequence(Mode mode, QStringList paths, const int selectedIndex)
-    : mode_(mode), paths_(std::move(paths)), selectedIndex_(selectedIndex)
+BrowsingSequence::BrowsingSequence(Mode mode, QStringList paths, const int selectedIndex,
+                                   QString directoryPath)
+    : mode_(mode), paths_(std::move(paths)), selectedIndex_(selectedIndex),
+      directoryPath_(std::move(directoryPath))
 {
 }
 
@@ -97,4 +100,59 @@ int BrowsingSequence::selectedIndex() const
 bool BrowsingSequence::isDirectoryBacked() const
 {
     return mode_ == Mode::DirectoryBacked;
+}
+
+BrowsingSequence::MoveOutcome BrowsingSequence::movePrevious()
+{
+    if (selectedIndex_ <= 0) {
+        return MoveOutcome::Beginning;
+    }
+    --selectedIndex_;
+    return MoveOutcome::Selected;
+}
+
+BrowsingSequence::MoveOutcome BrowsingSequence::moveNext()
+{
+    if (selectedIndex_ < 0 || selectedIndex_ + 1 >= paths_.size()) {
+        return MoveOutcome::End;
+    }
+    ++selectedIndex_;
+    return MoveOutcome::Selected;
+}
+
+BrowsingSequence::AdjacentPaths BrowsingSequence::adjacentPaths() const
+{
+    const auto pathAt = [this](const int index) {
+        return index >= 0 && index < paths_.size() ? paths_.at(index) : QString{};
+    };
+    return {pathAt(selectedIndex_ - 1), pathAt(selectedIndex_ + 1)};
+}
+
+BrowsingSequence::ReconcileOutcome BrowsingSequence::reconcileDirectory()
+{
+    if (mode_ != Mode::DirectoryBacked) {
+        return ReconcileOutcome::Unchanged;
+    }
+
+    const QString previousPath = selectedPath();
+    const int previousIndex = selectedIndex_;
+    BrowsingSequence refreshed = directoryBacked(directoryPath_, previousPath);
+    if (refreshed.paths_ == paths_) {
+        return ReconcileOutcome::Unchanged;
+    }
+
+    paths_ = std::move(refreshed.paths_);
+    if (paths_.isEmpty()) {
+        selectedIndex_ = -1;
+        return ReconcileOutcome::Empty;
+    }
+
+    const int preservedIndex = paths_.indexOf(previousPath);
+    if (preservedIndex >= 0) {
+        selectedIndex_ = preservedIndex;
+        return ReconcileOutcome::SelectionPreserved;
+    }
+
+    selectedIndex_ = std::clamp(previousIndex, 0, int(paths_.size()) - 1);
+    return ReconcileOutcome::SelectionReplaced;
 }

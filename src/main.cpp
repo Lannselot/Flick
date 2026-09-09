@@ -897,13 +897,13 @@ private:
             .arg(file.size())
             .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
             .arg(qRound(zoom_ * 100))
-            .arg(sequence_.indexOf(currentImage_.path) + 1)
-            .arg(sequence_.size());
+            .arg(browsingSequence_.paths().indexOf(currentImage_.path) + 1)
+            .arg(browsingSequence_.paths().size());
     }
 
     void showInformation()
     {
-        if (currentIndex_ < 0 || image_.isNull()) {
+        if (browsingSequence_.selectedIndex() < 0 || image_.isNull()) {
             return;
         }
         informationText_ = imageInformation();
@@ -935,7 +935,7 @@ private:
 
     void copyCurrentPath()
     {
-        if (currentIndex_ < 0 ||
+        if (browsingSequence_.selectedIndex() < 0 ||
             !externalActionCanRun(tr("Could not copy the current file path"))) {
             return;
         }
@@ -970,7 +970,7 @@ private:
 
     void revealCurrentFile()
     {
-        if (currentIndex_ < 0 ||
+        if (browsingSequence_.selectedIndex() < 0 ||
             !externalActionCanRun(tr("Could not show the current file in the file manager"))) {
             return;
         }
@@ -1007,14 +1007,14 @@ private:
 
     void updateStatusText()
     {
-        if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
+        if (browsingSequence_.selectedIndex() < 0 || requestedPath_.isEmpty()) {
             return;
         }
         statusDisplay_->setText(
             tr("%1 — %2 / %3 — %4%")
                 .arg(QFileInfo(requestedPath_).fileName())
-                .arg(currentIndex_ + 1)
-                .arg(sequence_.size())
+                .arg(browsingSequence_.selectedIndex() + 1)
+                .arg(browsingSequence_.paths().size())
                 .arg(qRound(zoom_ * 100)));
         statusDisplay_->adjustSize();
         positionStatusDisplay();
@@ -1034,7 +1034,7 @@ private:
 
     void showStatus(const bool revealPointer)
     {
-        if (currentIndex_ < 0 || !statusVisible_) {
+        if (browsingSequence_.selectedIndex() < 0 || !statusVisible_) {
             return;
         }
         updateStatusText();
@@ -1057,20 +1057,20 @@ private:
         const QString directoryPath = QFileInfo(canonicalPath).absolutePath();
         directoryWatcher_->removePaths(directoryWatcher_->directories());
         directoryWatcher_->addPath(directoryPath);
-        sequence_ = browsingSequence.paths();
-        displayImage(browsingSequence.selectedIndex());
+        browsingSequence_ = browsingSequence;
+        displaySelectedImage();
     }
 
     void openExplicitList(const QStringList &paths)
     {
         directoryWatcher_->removePaths(directoryWatcher_->directories());
         const BrowsingSequence browsingSequence = BrowsingSequence::explicitList(paths);
-        sequence_ = browsingSequence.paths();
-        if (sequence_.isEmpty()) {
+        browsingSequence_ = browsingSequence;
+        if (browsingSequence_.paths().isEmpty()) {
             showFeedback(tr("No supported images in drop"));
             return;
         }
-        displayImage(browsingSequence.selectedIndex());
+        displaySelectedImage();
     }
 
     void openDroppedPaths(const QStringList &paths)
@@ -1116,12 +1116,11 @@ private:
         openDirectoryBacked(selectedPath);
     }
 
-    void displayImage(const int index)
+    void displaySelectedImage()
     {
         dismissLargeImageWarning();
         rotationQuarterTurns_ = 0;
-        currentIndex_ = index;
-        requestedPath_ = sequence_.at(index);
+        requestedPath_ = browsingSequence_.selectedPath();
         imageLoader_.setCurrentPath(requestedPath_);
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
@@ -1131,7 +1130,7 @@ private:
 
     void retryCurrentImage()
     {
-        if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
+        if (browsingSequence_.selectedIndex() < 0 || requestedPath_.isEmpty()) {
             return;
         }
         errorState_->hide();
@@ -1213,24 +1212,20 @@ private:
         if (directoryWatcher_->directories().isEmpty()) {
             return;
         }
-        const int previousIndex = currentIndex_;
-        const QString previousPath = requestedPath_;
-        QStringList refreshed = BrowsingSequence::directoryBacked(
-                                    directoryWatcher_->directories().constFirst(), previousPath)
-                                    .paths();
-        const int preservedIndex = refreshed.indexOf(previousPath);
-        sequence_ = std::move(refreshed);
-        if (preservedIndex >= 0) {
-            currentIndex_ = preservedIndex;
+        const BrowsingSequence::ReconcileOutcome outcome =
+            browsingSequence_.reconcileDirectory();
+        if (outcome == BrowsingSequence::ReconcileOutcome::Unchanged) {
+            return;
+        }
+        if (outcome == BrowsingSequence::ReconcileOutcome::SelectionPreserved) {
             updateStatusText();
             prefetchNeighbors();
             return;
         }
 
-        currentIndex_ = -1;
         requestedPath_.clear();
         imageLoader_.setCurrentPath({});
-        if (sequence_.isEmpty()) {
+        if (outcome == BrowsingSequence::ReconcileOutcome::Empty) {
             currentImage_ = {};
             image_ = {};
             animationTimer_->stop();
@@ -1241,7 +1236,7 @@ private:
         }
 
         pendingFeedback_ = tr("Current image is no longer available");
-        displayImage(std::clamp(previousIndex, 0, int(sequence_.size()) - 1));
+        displaySelectedImage();
     }
 
     void showFrame(const int index)
@@ -1477,15 +1472,14 @@ private:
 
     void prefetchNeighbors()
     {
-        const auto requestAt = [this](const int index)
+        const auto requestFor = [this](const QString &path)
             -> std::optional<ImageLoading::DecodeRequest> {
-            if (index < 0 || index >= sequence_.size()) {
-                return std::nullopt;
-            }
-            return decodeRequest(sequence_.at(index));
+            return path.isEmpty() ? std::nullopt
+                                  : std::optional<ImageLoading::DecodeRequest>(decodeRequest(path));
         };
+        const BrowsingSequence::AdjacentPaths adjacent = browsingSequence_.adjacentPaths();
         const QList<QString> scheduled = imageLoader_.prefetchAdjacent(
-            requestAt(currentIndex_ - 1), requestAt(currentIndex_ + 1));
+            requestFor(adjacent.previous), requestFor(adjacent.next));
         for (const QString &path : scheduled) {
             recordScheduledDecode(path, true);
         }
@@ -1493,14 +1487,17 @@ private:
 
     void navigate(const int offset)
     {
-        const int requestedIndex = currentIndex_ + offset;
-        if (requestedIndex < 0 || requestedIndex >= sequence_.size()) {
-            boundaryMessage_->setText(offset < 0 ? tr("Beginning of folder") : tr("End of folder"));
+        const BrowsingSequence::MoveOutcome outcome =
+            offset < 0 ? browsingSequence_.movePrevious() : browsingSequence_.moveNext();
+        if (outcome != BrowsingSequence::MoveOutcome::Selected) {
+            boundaryMessage_->setText(outcome == BrowsingSequence::MoveOutcome::Beginning
+                                          ? tr("Beginning of folder")
+                                          : tr("End of folder"));
             boundaryMessage_->show();
             boundaryTimer_->start(1500);
             return;
         }
-        displayImage(requestedIndex);
+        displaySelectedImage();
     }
 
     void showFeedback(const QString &message)
@@ -1571,8 +1568,7 @@ private:
     QString pendingLargeImagePath_;
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
-    QStringList sequence_;
-    int currentIndex_ = -1;
+    BrowsingSequence browsingSequence_ = BrowsingSequence::explicitList({});
     QString requestedPath_;
     QString pendingFilePickerPath_;
     QString pendingFeedback_;
