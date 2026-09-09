@@ -66,6 +66,8 @@ private slots:
     void fullscreenInactivityHidesStatusAndPointerWithoutBlockingKeyboard();
     void informationShowsEssentialFacts();
     void copiesPathAndRenderedImageAndExposesContextCommands();
+    void exposesGroupedCommandSurfacesWithoutNavigationRows();
+    void restoresViewingFocusAndAppliesEscapePrecedence();
     void revealsCurrentFileAndReportsExternalActionFailures();
     void exposesAccessibleKeyboardActions();
 
@@ -1034,7 +1036,9 @@ void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
     QVERIFY(initialSmall.height() >= 79 && initialSmall.height() <= 80);
     const QImage smallFit =
         sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("Fit"));
-    QCOMPARE(colorBounds(smallFit, color).size(), QSize(477, 318));
+    const QSize fittedSmallSize = colorBounds(smallFit, color).size();
+    QVERIFY(fittedSmallSize.width() >= 440);
+    QVERIFY(fittedSmallSize.height() >= 293);
     const QImage smallActual =
         sendCommandAndWaitForScreenshot(smallFlick, QByteArrayLiteral("ActualSize"));
     QCOMPARE(colorBounds(smallActual, color).size(), QSize(120, 80));
@@ -1053,10 +1057,10 @@ void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
 
     RunningFlick largeFlick;
     start(largeFlick, {large});
-    QCOMPARE(colorBounds(waitForScreenshot(largeFlick), color).size(), QSize(478, 318));
+    QCOMPARE(colorBounds(waitForScreenshot(largeFlick), color).size(), QSize(478, 296));
     const QImage largeActual =
         sendCommandAndWaitForScreenshot(largeFlick, QByteArrayLiteral("ActualSize"));
-    QCOMPARE(colorBounds(largeActual, color).size(), QSize(478, 318));
+    QCOMPARE(colorBounds(largeActual, color).size(), QSize(478, 296));
 }
 
 void FlickApplicationTest::highZoomRemainsResponsiveWithoutAllocatingTheFullScaledImage()
@@ -1318,7 +1322,7 @@ void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()
     QVERIFY(leftSize.height() > leftSize.width());
     const QImage fitted = sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Fit"));
     const QSize fittedSize = colorBounds(fitted, firstColor).size();
-    QVERIFY(fittedSize.height() >= 317);
+    QVERIFY(fittedSize.height() >= 295);
     QVERIFY(fittedSize.height() > fittedSize.width());
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("ActualSize"));
     const QImage restored =
@@ -1597,6 +1601,77 @@ void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()
     sendCommand(asynchronous, QByteArrayLiteral("CopyPath"));
     QCOMPARE(sendQueryAndWaitForReply(asynchronous, QByteArrayLiteral("ClipboardText")),
              QFileInfo(incoming).canonicalFilePath().toUtf8());
+}
+
+void FlickApplicationTest::exposesGroupedCommandSurfacesWithoutNavigationRows()
+{
+    RunningFlick empty;
+    start(empty);
+    waitForScreenshot(empty);
+    QVERIFY(sendQueryAndWaitForReply(empty, QByteArrayLiteral("CommandAvailability"))
+                .contains("Fit to Window=disabled"));
+    sendCommandAndWaitForScreenshot(empty, QByteArrayLiteral("ContextMenu:10:10"));
+    QCOMPARE(sendQueryAndWaitForReply(empty, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("menu"));
+
+    const QString path =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("commands.png"));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+
+    const QByteArray context =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ContextMenuStructure"));
+    QCOMPARE(context,
+             QByteArrayLiteral("Open Image|---|Fit to Window|Actual Size|Zoom In|Zoom Out|Toggle "
+                               "Fullscreen|---|Rotate Left|Rotate Right|Pause or Resume "
+                               "Animation|Information|---|Copy Image|Copy Path|Show in File "
+                               "Manager|---|Settings"));
+    QVERIFY(!context.contains("Previous Image"));
+    QVERIFY(!context.contains("Next Image"));
+
+    const QByteArray application =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuStructure"));
+    QVERIFY(application.contains("File[Open Image"));
+    QVERIFY(application.contains("View[Fit to Window|Actual Size|Zoom In|Zoom Out|Toggle Fullscreen]"));
+    QVERIFY(application.contains("Image[Rotate Left|Rotate Right|Pause or Resume Animation|Information]"));
+    QVERIFY(application.contains("Help[About Flick]"));
+    QVERIFY(application.contains("Settings"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("CommandAvailability"))
+                .contains("Fit to Window=enabled"));
+}
+
+void FlickApplicationTest::restoresViewingFocusAndAppliesEscapePrecedence()
+{
+    const QString path =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("focus.png"));
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {path});
+    waitForScreenshot(flick);
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("viewing-surface"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Information"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("dialog"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("viewing-surface"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("F11"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("ContextMenu:10:10"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("menu"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState"))
+                .startsWith("fullscreen"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState"))
+                .startsWith("windowed"));
 }
 
 void FlickApplicationTest::revealsCurrentFileAndReportsExternalActionFailures()

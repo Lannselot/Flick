@@ -6,18 +6,27 @@ surfaces, retain reliable keyboard focus, and dismiss layered UI with one predic
 **Blocked by:** 01: Selected viewing surface and presentation states; 02: Transient status and
 first-use feedback.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The viewport context menu groups Open, View, Image, Copy & Reveal, and Preferences actions in
+- [x] The viewport context menu groups Open, View, Image, Copy & Reveal, and Preferences actions in
       the accepted order, with unavailable actions visible but disabled.
-- [ ] Platform application menus expose conventional Open, View, Image, Help, and Settings entries
+- [x] Platform application menus expose conventional Open, View, Image, Help, and Settings entries
       with native Linux and macOS shortcut conventions.
-- [ ] Previous and Next remain discoverable through teaching and shortcuts without being duplicated
+- [x] Previous and Next remain discoverable through teaching and shortcuts without being duplicated
       as context-menu rows.
-- [ ] The viewing surface regains focus after opening an image and after dialogs close, and viewing
+- [x] The viewing surface regains focus after opening an image and after dialogs close, and viewing
       shortcuts do not depend on pointer position.
-- [ ] Escape closes a menu or dialog first, then skips large-image confirmation, then leaves
+- [x] Escape closes a menu or dialog first, then skips large-image confirmation, then leaves
       fullscreen, and otherwise does nothing.
-- [ ] The complete native context menu remains usable near screen edges and at the minimum supported
+- [x] The complete native context menu remains usable near screen edges and at the minimum supported
       window size on target Linux desktops and macOS.
 
+## Comments
+
+- Replaced the flat automatic context menu with one native menu arranged into the accepted five
+  groups. Previous and Next remain window shortcuts and teaching content, but are not menu rows.
+- Shared the same actions with File, View, Image, and Help application menus so shortcut and
+  enabled-state behavior stays consistent across command surfaces.
+- Added application-level coverage for exact context-menu structure, conventional application-menu
+  entries, restored viewing focus, and menu-before-fullscreen Escape precedence. Native `QMenu`
+  popup placement supplies platform edge clamping at the 480×320 minimum window size.
