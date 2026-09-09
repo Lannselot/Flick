@@ -1,6 +1,6 @@
 # Flick UX/UI Specification
 
-Status: ready-for-prototype
+Status: ready-for-tickets
 
 ## Outcome
 
@@ -224,6 +224,18 @@ The prototype must answer these visual questions before production implementatio
 6. Does the non-modal Image Information dialog help comparison without obscuring the image?
 7. Are the 120 ms loading threshold and overlay fade free from distracting flashes?
 8. Does drag feedback remain clear over both very dark and very bright images?
+
+## Prototype Decision
+
+The selected visual direction is Variant A's centered native composition for the window,
+presentation-state family, command surfaces, Settings, and Image Information. In the Displayed
+state, use Variant C's quieter pill-shaped status overlay, centered near the bottom safe edge. This
+combination preserves the compact native-utility character while giving transient image status a
+more distinct overlay treatment without adding permanent chrome.
+
+Variants B and C are not implementation targets beyond the selected status-overlay treatment.
+Timing, native menu placement at screen edges, and high-DPI density remain production-validation
+questions rather than reasons to reopen the selected hierarchy.
 
 ## Prototype Acceptance
 
