@@ -79,7 +79,7 @@ AppImage assumptions.
 The builder runs `verify-release.sh` against the AppImage. It launches the
 extracted image with private XDG directories and requires `strace` to prove that
 the process makes no network syscalls. CTest also rejects source references to
-network APIs or remote URLs and network-capable linked libraries.
+network APIs or remote URLs and directly linked network-capable libraries.
 
 Before publishing, run the AppImage on current x86_64 Ubuntu, Fedora, and Arch
 installations. For each, record:

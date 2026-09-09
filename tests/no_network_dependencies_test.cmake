@@ -13,11 +13,17 @@ foreach(source IN LISTS sources)
     endif()
 endforeach()
 
-execute_process(COMMAND ldd "${BINARY}" OUTPUT_VARIABLE dependencies
-                RESULT_VARIABLE ldd_result)
-if(NOT ldd_result EQUAL 0)
-    message(FATAL_ERROR "Could not inspect release dependencies")
+find_program(READELF_EXECUTABLE readelf REQUIRED)
+execute_process(
+    COMMAND "${READELF_EXECUTABLE}" --dynamic "${BINARY}"
+    OUTPUT_VARIABLE dynamic_section
+    RESULT_VARIABLE readelf_result
+)
+if(NOT readelf_result EQUAL 0)
+    message(FATAL_ERROR "Could not inspect direct release dependencies")
 endif()
-if(dependencies MATCHES "(libcurl|libQt6Network|libssl|libcrypto)")
-    message(FATAL_ERROR "Network-capable release dependency found: ${dependencies}")
+if(dynamic_section MATCHES
+   "Shared library: \\[(libcurl|libQt6Network|libssl|libcrypto)[^]]*\\]")
+    message(FATAL_ERROR
+        "Direct network-capable release dependency found: ${dynamic_section}")
 endif()

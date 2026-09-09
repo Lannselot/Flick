@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "flick_application.h"
+#include "image_loading.h"
 #include "platform_services.h"
 
 #include <QApplication>
@@ -14,7 +15,7 @@
 #include <QColor>
 #include <QColorSpace>
 #include <QColorDialog>
-#include <QCollator>
+#include "browsing_sequence.h"
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
@@ -22,7 +23,6 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QFutureWatcher>
 #include <QHash>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -32,7 +32,6 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QFormLayout>
-#include <QImageReader>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLocale>
@@ -50,7 +49,6 @@
 #include <QSettings>
 #include <QSet>
 #include <QSpinBox>
-#include <QThread>
 #include <QTimer>
 #include <QToolButton>
 #include <QTransform>
@@ -58,14 +56,11 @@
 #include <QWidget>
 #include <QWheelEvent>
 #include <QWindow>
-#include <QtEndian>
-#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
-#include <limits>
 #include <memory>
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -79,7 +74,6 @@ namespace {
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 constexpr int StatusVisibilityMilliseconds = 2000;
 constexpr int KeyboardPanStep = 40;
-constexpr qint64 LargeImagePixelLimit = 100'000'000;
 constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
 
 enum class WheelAction
@@ -88,31 +82,7 @@ enum class WheelAction
     Zoom
 };
 
-struct DecodedImage
-{
-    QString path;
-    QString errorDetails;
-    QSize declaredSize;
-    qint64 estimatedAllocationBytes = 0;
-    bool confirmationRequired = false;
-    QList<QImage> frames;
-    QList<int> frameDelays;
-    int loopCount = 0;
-
-    bool isNull() const
-    {
-        return frames.isEmpty() || frames.first().isNull();
-    }
-
-    qsizetype sizeInBytes() const
-    {
-        qsizetype bytes = 0;
-        for (const QImage &frame : frames) {
-            bytes += frame.sizeInBytes();
-        }
-        return bytes;
-    }
-};
+using ImageLoading::LoadedImage;
 
 QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
 {
@@ -121,147 +91,6 @@ QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
         return new QAccessibleWidget(widget, QAccessible::Graphic);
     }
     return nullptr;
-}
-
-struct AnimationMetadata
-{
-    QList<int> frameDelays;
-    int repetitions = 0;
-};
-
-AnimationMetadata gifAnimationMetadata(const QByteArray &data)
-{
-    AnimationMetadata metadata;
-    if (data.size() < 13) {
-        return metadata;
-    }
-    const auto byteAt = [&data](const qsizetype index) {
-        return static_cast<uchar>(data.at(index));
-    };
-    const auto skipSubBlocks = [&data, &byteAt](qsizetype &offset) {
-        while (offset < data.size()) {
-            const qsizetype blockSize = byteAt(offset++);
-            if (blockSize == 0) {
-                return true;
-            }
-            if (offset + blockSize > data.size()) {
-                return false;
-            }
-            offset += blockSize;
-        }
-        return false;
-    };
-
-    qsizetype offset = 13;
-    const uchar logicalScreenFlags = byteAt(10);
-    if (logicalScreenFlags & 0x80) {
-        offset += 3 * (1 << ((logicalScreenFlags & 0x07) + 1));
-    }
-    int pendingFrameDelay = 100;
-    while (offset < data.size()) {
-        const uchar blockType = byteAt(offset++);
-        if (blockType == 0x3b) {
-            break;
-        }
-        if (blockType == 0x2c) {
-            if (offset + 9 > data.size()) {
-                break;
-            }
-            const uchar imageFlags = byteAt(offset + 8);
-            offset += 9;
-            if (imageFlags & 0x80) {
-                offset += 3 * (1 << ((imageFlags & 0x07) + 1));
-            }
-            if (offset >= data.size()) {
-                break;
-            }
-            ++offset;
-            if (!skipSubBlocks(offset)) {
-                break;
-            }
-            metadata.frameDelays.append(pendingFrameDelay);
-            pendingFrameDelay = 100;
-            continue;
-        }
-        if (blockType != 0x21 || offset >= data.size()) {
-            break;
-        }
-        const uchar extensionType = byteAt(offset++);
-        if (extensionType == 0xf9) {
-            if (offset + 6 > data.size() || byteAt(offset) != 4) {
-                break;
-            }
-            const auto *delayBytes =
-                reinterpret_cast<const uchar *>(data.constData() + offset + 2);
-            pendingFrameDelay = 10 * qFromLittleEndian<quint16>(delayBytes);
-            offset += 6;
-            continue;
-        }
-        if (offset >= data.size()) {
-            break;
-        }
-        const qsizetype headerSize = byteAt(offset++);
-        if (offset + headerSize > data.size()) {
-            break;
-        }
-        const QByteArray applicationIdentifier = data.mid(offset, headerSize);
-        offset += headerSize;
-        if (extensionType == 0xff && applicationIdentifier == QByteArrayLiteral("NETSCAPE2.0") &&
-            offset + 5 <= data.size() && byteAt(offset) == 3 && byteAt(offset + 1) == 1) {
-            const auto *loopBytes =
-                reinterpret_cast<const uchar *>(data.constData() + offset + 2);
-            const quint16 loopCount = qFromLittleEndian<quint16>(loopBytes);
-            metadata.repetitions = loopCount == 0 ? -1 : loopCount;
-        }
-        if (!skipSubBlocks(offset)) {
-            break;
-        }
-    }
-    return metadata;
-}
-
-quint32 littleEndian24(const uchar *bytes)
-{
-    return quint32(bytes[0]) | (quint32(bytes[1]) << 8) | (quint32(bytes[2]) << 16);
-}
-
-AnimationMetadata webpAnimationMetadata(const QByteArray &data)
-{
-    AnimationMetadata metadata;
-    qsizetype offset = 12;
-    while (offset + 8 <= data.size()) {
-        const QByteArray chunkName = data.mid(offset, 4);
-        const auto *chunk = reinterpret_cast<const uchar *>(data.constData() + offset + 8);
-        const quint32 chunkSize =
-            qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(data.constData() + offset + 4));
-        if (offset + 8 + chunkSize > static_cast<quint32>(data.size())) {
-            break;
-        }
-        if (chunkName == QByteArrayLiteral("ANIM") && chunkSize >= 6) {
-            const quint16 playCount = qFromLittleEndian<quint16>(chunk + 4);
-            metadata.repetitions = playCount == 0 ? -1 : std::max(0, int(playCount) - 1);
-        } else if (chunkName == QByteArrayLiteral("ANMF") && chunkSize >= 16) {
-            metadata.frameDelays.append(int(littleEndian24(chunk + 12)));
-        }
-        offset += 8 + chunkSize + (chunkSize & 1U);
-    }
-    return metadata;
-}
-
-AnimationMetadata animationMetadata(const QString &path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    const QByteArray data = file.readAll();
-    if (data.startsWith("GIF8")) {
-        return gifAnimationMetadata(data);
-    }
-    if (data.startsWith("RIFF") && data.mid(8, 4) == QByteArrayLiteral("WEBP")) {
-        return webpAnimationMetadata(data);
-    }
-    return {};
 }
 
 class ImageCanvas final : public QLabel
@@ -310,6 +139,7 @@ class ViewerWindow final : public QWidget
 public:
     ViewerWindow(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices)
         : platformServices_(std::move(platformServices))
+        , imageLoader_(this)
     {
         setWindowTitle(QStringLiteral("Flick"));
         setMinimumSize(480, 320);
@@ -412,6 +242,20 @@ public:
         });
         loadSettings();
 
+        imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
+            if (const auto *confirmation =
+                    std::get_if<ImageLoading::ConfirmationRequired>(&outcome)) {
+                showLargeImageWarning(*confirmation);
+                return;
+            }
+            if (const auto *loaded = std::get_if<LoadedImage>(&outcome)) {
+                present(loaded->path, *loaded);
+                prefetchNeighbors();
+                return;
+            }
+            showDecodeError(std::get<ImageLoading::DecodeFailure>(outcome));
+        });
+
         emptyState_ = new QLabel(tr("No image open"));
         emptyState_->setAlignment(Qt::AlignCenter);
         emptyState_->setAccessibleName(tr("No image open"));
@@ -499,7 +343,7 @@ public:
 
     bool isLoading() const
     {
-        return decodesInFlight_.contains(requestedPath_);
+        return imageLoader_.isLoading(browsingSequence_.selectedPath());
     }
 
     void displayConfigurationChanged()
@@ -529,12 +373,12 @@ public:
 #ifdef FLICK_ENABLE_TEST_HARNESS
     qsizetype cacheBytes() const
     {
-        return cachedBytes_;
+        return imageLoader_.cacheBytes();
     }
 
     qsizetype decodesInFlight() const
     {
-        return decodesInFlight_.size();
+        return imageLoader_.requestsInFlight();
     }
 
     int decodeCount(const QString &path) const
@@ -605,7 +449,7 @@ public:
         return QByteArray(wheelAction_ == WheelAction::Zoom ? "zoom" : "navigate") + '|' +
                viewportBackground_.name().toUtf8() + '|' +
                (statusVisible_ ? "visible" : "hidden") + '|' +
-               QByteArray::number(cacheBudgetBytes_) + '|' +
+               QByteArray::number(imageLoader_.cacheBudget()) + '|' +
                (restoreWindowGeometry_ ? "restore" : "forget");
     }
 
@@ -854,18 +698,19 @@ private:
             viewportBackground_ = QColor(QStringLiteral("#202020"));
         }
         statusVisible_ = settings.value(QStringLiteral("view/statusVisible"), true).toBool();
-        cacheBudgetBytes_ =
+        qsizetype cacheBudgetBytes =
             settings.value(QStringLiteral("cache/budgetBytes"), DefaultCacheBudgetBytes)
                 .toLongLong();
 #ifdef FLICK_ENABLE_TEST_HARNESS
         const qint64 testBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
         if (testBudget > 0) {
-            cacheBudgetBytes_ = testBudget;
+            cacheBudgetBytes = testBudget;
         }
 #endif
-        if (cacheBudgetBytes_ <= 0) {
-            cacheBudgetBytes_ = DefaultCacheBudgetBytes;
+        if (cacheBudgetBytes <= 0) {
+            cacheBudgetBytes = DefaultCacheBudgetBytes;
         }
+        imageLoader_.setCacheBudget(cacheBudgetBytes);
         restoreWindowGeometry_ =
             settings.value(QStringLiteral("window/restoreGeometry"), false).toBool();
         applyViewportBackground();
@@ -884,30 +729,6 @@ private:
         viewport_->viewport()->setPalette(palette);
     }
 
-    bool evictLeastRecentlyUsed()
-    {
-        QString oldestPath;
-        quint64 oldestUse = std::numeric_limits<quint64>::max();
-        for (auto it = cache_.cbegin(); it != cache_.cend(); ++it) {
-            if (it.value().lastUse < oldestUse && it.key() != requestedPath_) {
-                oldestPath = it.key();
-                oldestUse = it.value().lastUse;
-            }
-        }
-        if (oldestPath.isEmpty()) {
-            return false;
-        }
-        cachedBytes_ -= cache_.value(oldestPath).decoded.sizeInBytes();
-        cache_.remove(oldestPath);
-        return true;
-    }
-
-    void trimCacheToBudget()
-    {
-        while (cachedBytes_ > cacheBudgetBytes_ && evictLeastRecentlyUsed()) {
-        }
-    }
-
     void applySettings(const WheelAction wheelAction, const QColor &background,
                        const bool statusVisible, const qsizetype cacheBudgetBytes,
                        const bool restoreWindowGeometry)
@@ -915,7 +736,7 @@ private:
         setWheelAction(wheelAction);
         viewportBackground_ = background.isValid() ? background : QColor(QStringLiteral("#202020"));
         statusVisible_ = statusVisible;
-        cacheBudgetBytes_ = std::max<qsizetype>(1024 * 1024, cacheBudgetBytes);
+        imageLoader_.setCacheBudget(std::max<qsizetype>(1024 * 1024, cacheBudgetBytes));
         restoreWindowGeometry_ = restoreWindowGeometry;
         if (!statusVisible_) {
             statusTimer_->stop();
@@ -924,11 +745,10 @@ private:
             showStatus(false);
         }
         applyViewportBackground();
-        trimCacheToBudget();
         QSettings settings;
         settings.setValue(QStringLiteral("view/background"), viewportBackground_.name());
         settings.setValue(QStringLiteral("view/statusVisible"), statusVisible_);
-        settings.setValue(QStringLiteral("cache/budgetBytes"), cacheBudgetBytes_);
+        settings.setValue(QStringLiteral("cache/budgetBytes"), imageLoader_.cacheBudget());
         settings.setValue(QStringLiteral("window/restoreGeometry"), restoreWindowGeometry_);
         if (!restoreWindowGeometry_) {
             settings.remove(QStringLiteral("window/geometry"));
@@ -966,7 +786,7 @@ private:
         QSpinBox cache;
         cache.setRange(1, 16384);
         cache.setSuffix(tr(" MB"));
-        cache.setValue(static_cast<int>(cacheBudgetBytes_ / (1024 * 1024)));
+        cache.setValue(static_cast<int>(imageLoader_.cacheBudget() / (1024 * 1024)));
         QCheckBox geometry(tr("Restore window size and position"));
         geometry.setChecked(restoreWindowGeometry_);
         layout.addRow(tr("Mouse wheel:"), &wheel);
@@ -1077,13 +897,13 @@ private:
             .arg(file.size())
             .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
             .arg(qRound(zoom_ * 100))
-            .arg(sequence_.indexOf(currentImage_.path) + 1)
-            .arg(sequence_.size());
+            .arg(browsingSequence_.paths().indexOf(currentImage_.path) + 1)
+            .arg(browsingSequence_.paths().size());
     }
 
     void showInformation()
     {
-        if (currentIndex_ < 0 || image_.isNull()) {
+        if (browsingSequence_.selectedIndex() < 0 || image_.isNull()) {
             return;
         }
         informationText_ = imageInformation();
@@ -1115,7 +935,7 @@ private:
 
     void copyCurrentPath()
     {
-        if (currentIndex_ < 0 ||
+        if (browsingSequence_.selectedIndex() < 0 ||
             !externalActionCanRun(tr("Could not copy the current file path"))) {
             return;
         }
@@ -1150,7 +970,7 @@ private:
 
     void revealCurrentFile()
     {
-        if (currentIndex_ < 0 ||
+        if (browsingSequence_.selectedIndex() < 0 ||
             !externalActionCanRun(tr("Could not show the current file in the file manager"))) {
             return;
         }
@@ -1187,14 +1007,15 @@ private:
 
     void updateStatusText()
     {
-        if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
+        const QString currentPath = browsingSequence_.selectedPath();
+        if (currentPath.isEmpty()) {
             return;
         }
         statusDisplay_->setText(
             tr("%1 — %2 / %3 — %4%")
-                .arg(QFileInfo(requestedPath_).fileName())
-                .arg(currentIndex_ + 1)
-                .arg(sequence_.size())
+                .arg(QFileInfo(currentPath).fileName())
+                .arg(browsingSequence_.selectedIndex() + 1)
+                .arg(browsingSequence_.paths().size())
                 .arg(qRound(zoom_ * 100)));
         statusDisplay_->adjustSize();
         positionStatusDisplay();
@@ -1214,7 +1035,7 @@ private:
 
     void showStatus(const bool revealPointer)
     {
-        if (currentIndex_ < 0 || !statusVisible_) {
+        if (browsingSequence_.selectedIndex() < 0 || !statusVisible_) {
             return;
         }
         updateStatusText();
@@ -1226,88 +1047,36 @@ private:
         statusTimer_->start(StatusVisibilityMilliseconds);
     }
 
-    static bool isSupportedImage(const QString &path)
-    {
-        static const QStringList supportedSuffixes = {QStringLiteral("jpg"), QStringLiteral("jpeg"),
-                                                      QStringLiteral("png"), QStringLiteral("webp"),
-                                                      QStringLiteral("gif"), QStringLiteral("bmp")};
-        const QFileInfo file(path);
-        return file.isFile() && supportedSuffixes.contains(file.suffix(), Qt::CaseInsensitive);
-    }
-
-    static void sortNaturally(QStringList &paths)
-    {
-        QCollator collator(QLocale::English);
-        collator.setCaseSensitivity(Qt::CaseInsensitive);
-        collator.setNumericMode(true);
-        std::sort(paths.begin(), paths.end(), [&collator](const QString &left, const QString &right) {
-            const QString leftName = QFileInfo(left).fileName();
-            const QString rightName = QFileInfo(right).fileName();
-            const int naturalOrder = collator.compare(leftName, rightName);
-            return naturalOrder == 0 ? leftName < rightName : naturalOrder < 0;
-        });
-    }
-
-    static QStringList directorySequenceForDirectory(const QString &directoryPath)
-    {
-        const QDir directory(directoryPath);
-        QStringList paths;
-        for (const QFileInfo &entry : directory.entryInfoList(QDir::Files)) {
-            if (isSupportedImage(entry.filePath())) {
-                paths.append(entry.canonicalFilePath());
-            }
-        }
-        sortNaturally(paths);
-        return paths;
-    }
-
-    static QStringList directorySequence(const QString &imagePath)
-    {
-        return directorySequenceForDirectory(QFileInfo(imagePath).absolutePath());
-    }
-
     void openDirectoryBacked(const QString &path)
     {
-        if (!isSupportedImage(path)) {
+        const BrowsingSequence browsingSequence = BrowsingSequence::directoryBacked(path);
+        if (browsingSequence.selectedIndex() < 0) {
             showFeedback(tr("Unsupported dropped content"));
             return;
         }
-        const QString canonicalPath = QFileInfo(path).canonicalFilePath();
+        const QString canonicalPath = browsingSequence.selectedPath();
         const QString directoryPath = QFileInfo(canonicalPath).absolutePath();
         directoryWatcher_->removePaths(directoryWatcher_->directories());
         directoryWatcher_->addPath(directoryPath);
-        sequence_ = directorySequence(canonicalPath);
-        const int openedIndex = sequence_.indexOf(canonicalPath);
-        if (openedIndex < 0) {
-            showEmptyState();
-            return;
-        }
-        displayImage(openedIndex);
+        browsingSequence_ = browsingSequence;
+        displaySelectedImage();
     }
 
     void openExplicitList(const QStringList &paths)
     {
         directoryWatcher_->removePaths(directoryWatcher_->directories());
-        sequence_.clear();
-        for (const QString &path : paths) {
-            if (isSupportedImage(path)) {
-                const QString canonicalPath = QFileInfo(path).canonicalFilePath();
-                if (!sequence_.contains(canonicalPath)) {
-                    sequence_.append(canonicalPath);
-                }
-            }
-        }
-        sortNaturally(sequence_);
-        if (sequence_.isEmpty()) {
+        const BrowsingSequence browsingSequence = BrowsingSequence::explicitList(paths);
+        browsingSequence_ = browsingSequence;
+        if (browsingSequence_.paths().isEmpty()) {
             showFeedback(tr("No supported images in drop"));
             return;
         }
-        displayImage(0);
+        displaySelectedImage();
     }
 
     void openDroppedPaths(const QStringList &paths)
     {
-        if (paths.size() == 1 && isSupportedImage(paths.first())) {
+        if (paths.size() == 1 && BrowsingSequence::supports(paths.first())) {
             openDirectoryBacked(paths.first());
         } else {
             openExplicitList(paths);
@@ -1339,7 +1108,8 @@ private:
         if (selectedPath.isEmpty()) {
             return;
         }
-        if (!isSupportedImage(selectedPath)) {
+        const BrowsingSequence browsingSequence = BrowsingSequence::directoryBacked(selectedPath);
+        if (browsingSequence.selectedIndex() < 0) {
             showFeedback(tr("Unsupported image"));
             return;
         }
@@ -1347,51 +1117,43 @@ private:
         openDirectoryBacked(selectedPath);
     }
 
-    void displayImage(const int index)
+    void displaySelectedImage()
     {
         dismissLargeImageWarning();
         rotationQuarterTurns_ = 0;
-        currentIndex_ = index;
-        requestedPath_ = sequence_.at(index);
+        const QString currentPath = browsingSequence_.selectedPath();
+        imageLoader_.setCurrentPath(currentPath);
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
         }
-        if (cache_.contains(requestedPath_)) {
-            touch(requestedPath_);
-            present(requestedPath_, cache_.value(requestedPath_).decoded);
-            prefetchNeighbors();
-            return;
-        }
-        decode(requestedPath_);
+        requestDecode(currentPath);
     }
 
     void retryCurrentImage()
     {
-        if (currentIndex_ < 0 || requestedPath_.isEmpty()) {
+        const QString currentPath = browsingSequence_.selectedPath();
+        if (currentPath.isEmpty()) {
             return;
-        }
-        if (cache_.contains(requestedPath_)) {
-            cachedBytes_ -= cache_.value(requestedPath_).decoded.sizeInBytes();
-            cache_.remove(requestedPath_);
         }
         errorState_->hide();
         dismissLargeImageWarning();
-        decode(requestedPath_);
+        retryDecode(currentPath);
     }
 
     void approveLargeImage()
     {
         const QString approvedPath = pendingLargeImagePath_;
         dismissLargeImageWarning();
-        if (!approvedPath.isEmpty() && requestedPath_ == approvedPath) {
-            decode(approvedPath, true);
+        if (!approvedPath.isEmpty() && browsingSequence_.selectedPath() == approvedPath) {
+            retryDecode(approvedPath, true);
         }
     }
 
     void rejectLargeImage()
     {
         const bool rejectingCurrent =
-            !pendingLargeImagePath_.isEmpty() && requestedPath_ == pendingLargeImagePath_;
+            !pendingLargeImagePath_.isEmpty() &&
+            browsingSequence_.selectedPath() == pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (rejectingCurrent) {
             showEmptyState();
@@ -1405,9 +1167,9 @@ private:
         pendingLargeImagePath_.clear();
     }
 
-    void present(const QString &path, const DecodedImage &decoded)
+    void present(const QString &path, const LoadedImage &decoded)
     {
-        if (decoded.isNull() || requestedPath_ != path) {
+        if (decoded.frames.isEmpty() || browsingSequence_.selectedPath() != path) {
             return;
         }
         animationTimer_->stop();
@@ -1453,22 +1215,19 @@ private:
         if (directoryWatcher_->directories().isEmpty()) {
             return;
         }
-        const int previousIndex = currentIndex_;
-        const QString previousPath = requestedPath_;
-        QStringList refreshed =
-            directorySequenceForDirectory(directoryWatcher_->directories().constFirst());
-        const int preservedIndex = refreshed.indexOf(previousPath);
-        sequence_ = std::move(refreshed);
-        if (preservedIndex >= 0) {
-            currentIndex_ = preservedIndex;
+        const BrowsingSequence::ReconcileOutcome outcome =
+            browsingSequence_.reconcileDirectory();
+        if (outcome == BrowsingSequence::ReconcileOutcome::Unchanged) {
+            return;
+        }
+        if (outcome == BrowsingSequence::ReconcileOutcome::SelectionPreserved) {
             updateStatusText();
             prefetchNeighbors();
             return;
         }
 
-        currentIndex_ = -1;
-        requestedPath_.clear();
-        if (sequence_.isEmpty()) {
+        if (outcome == BrowsingSequence::ReconcileOutcome::Empty) {
+            imageLoader_.setCurrentPath({});
             currentImage_ = {};
             image_ = {};
             animationTimer_->stop();
@@ -1479,7 +1238,7 @@ private:
         }
 
         pendingFeedback_ = tr("Current image is no longer available");
-        displayImage(std::clamp(previousIndex, 0, int(sequence_.size()) - 1));
+        displaySelectedImage();
     }
 
     void showFrame(const int index)
@@ -1505,7 +1264,7 @@ private:
             return;
         }
         displayColorSpace_ = next;
-        if (!currentImage_.isNull()) {
+        if (!currentImage_.frames.isEmpty()) {
             showFrame(currentFrame_);
         }
     }
@@ -1671,152 +1430,76 @@ private:
         }
     }
 
-    void decode(const QString &path, const bool approvedLargeImage = false)
+    ImageLoading::DecodeRequest decodeRequest(const QString &path,
+                                              const bool approvedLargeImage = false) const
     {
-        if (path.isEmpty() || cache_.contains(path) || decodesInFlight_.contains(path)) {
-            return;
-        }
-        decodesInFlight_.insert(path);
 #ifdef FLICK_ENABLE_TEST_HARNESS
-        ++decodeCounts_[path];
-        const int delayMilliseconds = qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
         const qint64 configuredAllocationLimit =
             qEnvironmentVariableIntValue("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES");
         const qint64 allocationLimit = configuredAllocationLimit > 0
                                            ? configuredAllocationLimit
                                            : LargeImageAllocationLimit;
 #else
-        constexpr int delayMilliseconds = 0;
         constexpr qint64 allocationLimit = LargeImageAllocationLimit;
 #endif
-        auto *watcher = new QFutureWatcher<DecodedImage>(this);
-        QObject::connect(watcher, &QFutureWatcher<DecodedImage>::finished, this,
-                         [this, watcher] {
-                             const DecodedImage decoded = watcher->result();
-                             watcher->deleteLater();
-                             decodesInFlight_.remove(decoded.path);
-                             if (decoded.confirmationRequired) {
-                                 if (requestedPath_ == decoded.path) {
-                                     showLargeImageWarning(decoded);
-                                 }
-                                 return;
-                             }
-                             if (!decoded.isNull()) {
-                                 insertCache(decoded.path, decoded);
-                             }
-                             if (requestedPath_ == decoded.path) {
-                                 if (decoded.isNull()) {
-                                     showDecodeError(decoded);
-                                 } else {
-                                     present(decoded.path, decoded);
-                                     prefetchNeighbors();
-                                 }
-                             }
-                         });
-        watcher->setFuture(
-            QtConcurrent::run([path, delayMilliseconds, approvedLargeImage, allocationLimit] {
+        return {path, approvedLargeImage, allocationLimit};
+    }
+
+    void recordScheduledDecode(const QString &path, const bool scheduled)
+    {
 #ifdef FLICK_ENABLE_TEST_HARNESS
-            if (delayMilliseconds > 0) {
-                QThread::msleep(static_cast<unsigned long>(delayMilliseconds));
-            }
+        if (scheduled) {
+            ++decodeCounts_[path];
+        }
+#else
+        Q_UNUSED(path)
+        Q_UNUSED(scheduled)
 #endif
-            QImageReader reader(path);
-            reader.setAutoTransform(true);
-            DecodedImage decoded;
-            decoded.path = path;
-            decoded.declaredSize = reader.size();
-            if (decoded.declaredSize.isValid()) {
-                const qint64 pixels = qint64(decoded.declaredSize.width()) *
-                                      qint64(decoded.declaredSize.height());
-                const qint64 bytesPerFrame =
-                    pixels > std::numeric_limits<qint64>::max() / 4
-                        ? std::numeric_limits<qint64>::max()
-                        : pixels * 4;
-                const qint64 frameCount = std::max(1, reader.imageCount());
-                decoded.estimatedAllocationBytes =
-                    bytesPerFrame > std::numeric_limits<qint64>::max() / frameCount
-                        ? std::numeric_limits<qint64>::max()
-                        : bytesPerFrame * frameCount;
-                decoded.confirmationRequired =
-                    !approvedLargeImage &&
-                    (pixels > LargeImagePixelLimit ||
-                     decoded.estimatedAllocationBytes > allocationLimit);
-                if (decoded.confirmationRequired) {
-                    return decoded;
-                }
-            }
-            const AnimationMetadata metadata = animationMetadata(path);
-            decoded.loopCount = metadata.repetitions;
-            while (reader.canRead()) {
-                const QImage frame = reader.read();
-                if (frame.isNull()) {
-                    break;
-                }
-                QImage colorManagedFrame = frame;
-                if (!colorManagedFrame.colorSpace().isValid()) {
-                    colorManagedFrame.setColorSpace(QColorSpace(QColorSpace::SRgb));
-                }
-                decoded.frames.append(std::move(colorManagedFrame));
-                const qsizetype frameIndex = decoded.frames.size() - 1;
-                decoded.frameDelays.append(frameIndex < metadata.frameDelays.size()
-                                               ? metadata.frameDelays.at(frameIndex)
-                                               : 100);
-            }
-            if (decoded.isNull()) {
-                decoded.errorDetails = reader.errorString();
-                if (decoded.errorDetails.isEmpty()) {
-                    decoded.errorDetails = QCoreApplication::translate(
-                        "ViewerWindow", "The image decoder returned no pixels.");
-                }
-            }
-            return decoded;
-            }));
     }
 
-    struct CacheEntry
+    void requestDecode(const QString &path)
     {
-        DecodedImage decoded;
-        quint64 lastUse = 0;
-    };
-
-    void touch(const QString &path)
-    {
-        cache_[path].lastUse = ++accessCounter_;
+        if (!path.isEmpty()) {
+            recordScheduledDecode(path, imageLoader_.request(decodeRequest(path)));
+        }
     }
 
-    void insertCache(const QString &path, const DecodedImage &decoded)
+    void retryDecode(const QString &path, const bool approvedLargeImage = false)
     {
-        const qsizetype bytes = decoded.sizeInBytes();
-        if (bytes > cacheBudgetBytes_) {
-            return;
+        if (!path.isEmpty()) {
+            recordScheduledDecode(
+                path, imageLoader_.retry(decodeRequest(path, approvedLargeImage)));
         }
-        if (cache_.contains(path)) {
-            cachedBytes_ -= cache_.value(path).decoded.sizeInBytes();
-        }
-        cache_.insert(path, CacheEntry{decoded, ++accessCounter_});
-        cachedBytes_ += bytes;
-        trimCacheToBudget();
     }
 
     void prefetchNeighbors()
     {
-        for (const int neighbor : {currentIndex_ - 1, currentIndex_ + 1}) {
-            if (neighbor >= 0 && neighbor < sequence_.size()) {
-                decode(sequence_.at(neighbor));
-            }
+        const auto requestFor = [this](const QString &path)
+            -> std::optional<ImageLoading::DecodeRequest> {
+            return path.isEmpty() ? std::nullopt
+                                  : std::optional<ImageLoading::DecodeRequest>(decodeRequest(path));
+        };
+        const BrowsingSequence::AdjacentPaths adjacent = browsingSequence_.adjacentPaths();
+        const QList<QString> scheduled = imageLoader_.prefetchAdjacent(
+            requestFor(adjacent.previous), requestFor(adjacent.next));
+        for (const QString &path : scheduled) {
+            recordScheduledDecode(path, true);
         }
     }
 
     void navigate(const int offset)
     {
-        const int requestedIndex = currentIndex_ + offset;
-        if (requestedIndex < 0 || requestedIndex >= sequence_.size()) {
-            boundaryMessage_->setText(offset < 0 ? tr("Beginning of folder") : tr("End of folder"));
+        const BrowsingSequence::MoveOutcome outcome =
+            offset < 0 ? browsingSequence_.movePrevious() : browsingSequence_.moveNext();
+        if (outcome != BrowsingSequence::MoveOutcome::Selected) {
+            boundaryMessage_->setText(outcome == BrowsingSequence::MoveOutcome::Beginning
+                                          ? tr("Beginning of folder")
+                                          : tr("End of folder"));
             boundaryMessage_->show();
             boundaryTimer_->start(1500);
             return;
         }
-        displayImage(requestedIndex);
+        displaySelectedImage();
     }
 
     void showFeedback(const QString &message)
@@ -1834,39 +1517,42 @@ private:
         emptyState_->show();
     }
 
-    void showDecodeError(const DecodedImage &decoded)
+    void showDecodeError(const ImageLoading::DecodeFailure &failure)
     {
         animationTimer_->stop();
         viewport_->hide();
         emptyState_->hide();
         errorExplanation_->setText(
             tr("%1 could not be displayed. You can retry or browse to another image.")
-                .arg(QFileInfo(decoded.path).fileName()));
-        errorDetails_->setText(decoded.errorDetails);
+                .arg(QFileInfo(failure.path).fileName()));
+        errorDetails_->setText(
+            failure.details.isEmpty() ? tr("The image decoder returned no pixels.")
+                                      : failure.details);
         errorDetailsButton_->setChecked(false);
         errorState_->show();
         setWindowTitle(tr("Flick — Error"));
     }
 
-    void showLargeImageWarning(const DecodedImage &decoded)
+    void showLargeImageWarning(const ImageLoading::ConfirmationRequired &confirmation)
     {
-        pendingLargeImageSize_ = decoded.declaredSize;
-        pendingLargeImagePath_ = decoded.path;
+        pendingLargeImageSize_ = confirmation.declaredSize;
+        pendingLargeImagePath_ = confirmation.path;
         viewport_->hide();
         emptyState_->hide();
         errorState_->hide();
         largeImageExplanation_->setText(
             tr("%1 declares %2 × %3 pixels and may require about %4 MB when decoded. "
                "Decode it anyway?")
-                .arg(QFileInfo(decoded.path).fileName())
-                .arg(decoded.declaredSize.width())
-                .arg(decoded.declaredSize.height())
-                .arg(decoded.estimatedAllocationBytes / (1024 * 1024)));
+                .arg(QFileInfo(confirmation.path).fileName())
+                .arg(confirmation.declaredSize.width())
+                .arg(confirmation.declaredSize.height())
+                .arg(confirmation.estimatedAllocationBytes / (1024 * 1024)));
         largeImageWarning_->show();
     }
 
     QImage image_;
     std::unique_ptr<PlatformServices> platformServices_;
+    ImageLoading::Loader imageLoader_;
     ImageCanvas *imageLabel_ = nullptr;
     QScrollArea *viewport_ = nullptr;
     QLabel *boundaryMessage_ = nullptr;
@@ -1884,12 +1570,10 @@ private:
     QString pendingLargeImagePath_;
     QLabel *statusDisplay_ = nullptr;
     QTimer *statusTimer_ = nullptr;
-    QStringList sequence_;
-    int currentIndex_ = -1;
-    QString requestedPath_;
+    BrowsingSequence browsingSequence_ = BrowsingSequence::explicitList({});
     QString pendingFilePickerPath_;
     QString pendingFeedback_;
-    DecodedImage currentImage_;
+    LoadedImage currentImage_;
     int currentFrame_ = 0;
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
@@ -1899,15 +1583,10 @@ private:
     int rotationQuarterTurns_ = 0;
     bool dragging_ = false;
     QPointF lastDragPosition_;
-    QHash<QString, CacheEntry> cache_;
-    QSet<QString> decodesInFlight_;
-    qsizetype cachedBytes_ = 0;
-    qsizetype cacheBudgetBytes_ = DefaultCacheBudgetBytes;
     QColor viewportBackground_{QStringLiteral("#202020")};
     bool statusVisible_ = true;
     bool restoreWindowGeometry_ = false;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
-    quint64 accessCounter_ = 0;
     QList<QAction *> imageActions_;
     QString informationText_;
 #if defined(Q_OS_MACOS)

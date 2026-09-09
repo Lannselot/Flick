@@ -1,0 +1,360 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "image_loading.h"
+
+#include <QColorSpace>
+#include <QFile>
+#include <QScopeGuard>
+#include <QTemporaryDir>
+#include <QTest>
+
+#include <optional>
+
+class ImageLoadingTest final : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void decodesStaticImage();
+    void preservesAnimatedMetadata();
+    void appliesOrientationAndDefaultsUntaggedFramesToSrgb();
+    void reportsMalformedInput();
+    void requestsConfirmationBeforeExceptionalDecode();
+    void concurrentRequestsPublishOnlyTheCurrentOutcome();
+    void suppressesDuplicateRequests();
+    void retriesACompletedRequest();
+    void currentSelectionObsoletesAnInFlightRequest();
+    void reusesCachedImageWithoutDecodingAgain();
+    void evictsLeastRecentlyUsedImage();
+    void doesNotCacheOversizedImage();
+    void budgetReductionProtectsCurrentRequest();
+    void prefetchesAdjacentImagesWithoutRedundantDecoding();
+
+private:
+    QString writeFixture(const QString &encodedName, const QString &imageName);
+
+    QTemporaryDir fixtures_;
+};
+
+QString ImageLoadingTest::writeFixture(const QString &encodedName, const QString &imageName)
+{
+    QFile encoded(QStringLiteral(FLICK_FIXTURE_DIR "/") + encodedName);
+    if (!encoded.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    QFile image(fixtures_.filePath(imageName));
+    const QByteArray contents = QByteArray::fromBase64(encoded.readAll());
+    if (!image.open(QIODevice::WriteOnly) || image.write(contents) != contents.size()) {
+        return {};
+    }
+    return image.fileName();
+}
+
+void ImageLoadingTest::decodesStaticImage()
+{
+    QVERIFY(fixtures_.isValid());
+    const QString path = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("static.png"));
+    QVERIFY(!path.isEmpty());
+
+    const ImageLoading::DecodeOutcome outcome = ImageLoading::decode({path});
+
+    QVERIFY(std::holds_alternative<ImageLoading::LoadedImage>(outcome));
+    const auto &loaded = std::get<ImageLoading::LoadedImage>(outcome);
+    QCOMPARE(loaded.path, path);
+    QCOMPARE(loaded.frames.size(), 1);
+    QCOMPARE(loaded.frames.first().size(), QSize(8, 6));
+    QCOMPARE(loaded.frames.first().pixelColor(4, 3), QColor(220, 20, 60));
+    QCOMPARE(loaded.frameDelays, QList<int>{100});
+}
+
+void ImageLoadingTest::preservesAnimatedMetadata()
+{
+    const QString gifPath = writeFixture(QStringLiteral("animated.gif.base64"),
+                                         QStringLiteral("animated.gif"));
+    const QString webpPath = writeFixture(QStringLiteral("animated.webp.base64"),
+                                          QStringLiteral("animated.webp"));
+
+    const auto gif = std::get<ImageLoading::LoadedImage>(ImageLoading::decode({gifPath}));
+    QCOMPARE(gif.frames.size(), 2);
+    QCOMPARE(gif.frames.at(0).pixelColor(4, 3), QColor(220, 20, 60));
+    QCOMPARE(gif.frames.at(1).pixelColor(4, 3), QColor(50, 205, 50));
+    QCOMPARE(gif.frameDelays, QList<int>({120, 280}));
+    QCOMPARE(gif.loopCount, 0);
+
+    const auto webp = std::get<ImageLoading::LoadedImage>(ImageLoading::decode({webpPath}));
+    QCOMPARE(webp.frames.size(), 2);
+    const QColor webpFirst = webp.frames.at(0).pixelColor(4, 3);
+    const QColor webpSecond = webp.frames.at(1).pixelColor(4, 3);
+    QVERIFY(qAbs(webpFirst.red() - 220) <= 5);
+    QVERIFY(qAbs(webpFirst.green() - 20) <= 5);
+    QVERIFY(qAbs(webpFirst.blue() - 60) <= 5);
+    QVERIFY(qAbs(webpSecond.red() - 50) <= 5);
+    QVERIFY(qAbs(webpSecond.green() - 205) <= 5);
+    QVERIFY(qAbs(webpSecond.blue() - 50) <= 5);
+    QCOMPARE(webp.frameDelays, QList<int>({120, 280}));
+    QCOMPARE(webp.loopCount, -1);
+}
+
+void ImageLoadingTest::appliesOrientationAndDefaultsUntaggedFramesToSrgb()
+{
+    const QString orientedPath = writeFixture(QStringLiteral("oriented.jpg.base64"),
+                                              QStringLiteral("oriented.jpg"));
+    const auto oriented =
+        std::get<ImageLoading::LoadedImage>(ImageLoading::decode({orientedPath}));
+    QCOMPARE(oriented.frames.first().size(), QSize(6, 12));
+
+    const QString untaggedPath = writeFixture(QStringLiteral("static.png.base64"),
+                                              QStringLiteral("untagged.png"));
+    const auto untagged =
+        std::get<ImageLoading::LoadedImage>(ImageLoading::decode({untaggedPath}));
+    QCOMPARE(untagged.frames.first().colorSpace(), QColorSpace(QColorSpace::SRgb));
+}
+
+void ImageLoadingTest::reportsMalformedInput()
+{
+    const QString path = fixtures_.filePath(QStringLiteral("broken.png"));
+    QFile malformed(path);
+    QVERIFY(malformed.open(QIODevice::WriteOnly));
+    QCOMPARE(malformed.write("not an image"), 12);
+    malformed.close();
+
+    const ImageLoading::DecodeOutcome outcome = ImageLoading::decode({path});
+
+    QVERIFY(std::holds_alternative<ImageLoading::DecodeFailure>(outcome));
+    const auto &failure = std::get<ImageLoading::DecodeFailure>(outcome);
+    QCOMPARE(failure.path, path);
+    QVERIFY(!failure.details.isEmpty());
+}
+
+void ImageLoadingTest::requestsConfirmationBeforeExceptionalDecode()
+{
+    const QString path = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("exceptional.png"));
+
+    const ImageLoading::DecodeOutcome outcome = ImageLoading::decode({path, false, 100});
+
+    QVERIFY(std::holds_alternative<ImageLoading::ConfirmationRequired>(outcome));
+    const auto &confirmation = std::get<ImageLoading::ConfirmationRequired>(outcome);
+    QCOMPARE(confirmation.path, path);
+    QCOMPARE(confirmation.declaredSize, QSize(8, 6));
+    QCOMPARE(confirmation.estimatedAllocationBytes, 192);
+}
+
+void ImageLoadingTest::concurrentRequestsPublishOnlyTheCurrentOutcome()
+{
+    const QString firstPath = writeFixture(QStringLiteral("animated.webp.base64"),
+                                           QStringLiteral("first.webp"));
+    const QString currentPath = writeFixture(QStringLiteral("static.png.base64"),
+                                             QStringLiteral("current.png"));
+    QVERIFY(!firstPath.isEmpty());
+    QVERIFY(!currentPath.isEmpty());
+    qputenv("FLICK_TEST_DECODE_DELAY_PATH", firstPath.toUtf8());
+    qputenv("FLICK_TEST_DECODE_DELAY_MS", "200");
+    const auto clearDecodeDelay = qScopeGuard([] {
+        qunsetenv("FLICK_TEST_DECODE_DELAY_PATH");
+        qunsetenv("FLICK_TEST_DECODE_DELAY_MS");
+    });
+
+    ImageLoading::Loader loader;
+    std::optional<ImageLoading::DecodeOutcome> presented;
+    loader.setOutcomeHandler([&presented](ImageLoading::DecodeOutcome outcome) {
+        presented = std::move(outcome);
+    });
+
+    loader.request({firstPath});
+    loader.request({currentPath});
+
+    QTRY_VERIFY_WITH_TIMEOUT(presented.has_value(), 5000);
+    const auto *loaded = std::get_if<ImageLoading::LoadedImage>(&*presented);
+    QVERIFY(loaded);
+    QCOMPARE(loaded->path, currentPath);
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.hasRequestsInFlight(), 5000);
+    loaded = std::get_if<ImageLoading::LoadedImage>(&*presented);
+    QVERIFY(loaded);
+    QCOMPARE(loaded->path, currentPath);
+}
+
+void ImageLoadingTest::suppressesDuplicateRequests()
+{
+    const QString path = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("duplicate.png"));
+    ImageLoading::Loader loader;
+    int completionCount = 0;
+    loader.setLoadedHandler([&completionCount](const ImageLoading::LoadedImage &) {
+        ++completionCount;
+    });
+
+    QVERIFY(loader.request({path}));
+    QVERIFY(!loader.request({path}));
+
+    QTRY_COMPARE_WITH_TIMEOUT(completionCount, 1, 5000);
+    QVERIFY(!loader.hasRequestsInFlight());
+}
+
+void ImageLoadingTest::retriesACompletedRequest()
+{
+    const QString path = fixtures_.filePath(QStringLiteral("retry.png"));
+    QFile malformed(path);
+    QVERIFY(malformed.open(QIODevice::WriteOnly));
+    QCOMPARE(malformed.write("not an image"), 12);
+    malformed.close();
+
+    ImageLoading::Loader loader;
+    std::optional<ImageLoading::DecodeOutcome> presented;
+    loader.setOutcomeHandler([&presented](ImageLoading::DecodeOutcome outcome) {
+        presented = std::move(outcome);
+    });
+    QVERIFY(loader.request({path}));
+    QTRY_VERIFY_WITH_TIMEOUT(presented.has_value(), 5000);
+    QVERIFY(std::holds_alternative<ImageLoading::DecodeFailure>(*presented));
+
+    const QString replacement = writeFixture(QStringLiteral("static.png.base64"),
+                                             QStringLiteral("replacement.png"));
+    QFile::remove(path);
+    QVERIFY(QFile::copy(replacement, path));
+    presented.reset();
+
+    QVERIFY(loader.retry({path}));
+    QTRY_VERIFY_WITH_TIMEOUT(presented.has_value(), 5000);
+    const auto *loaded = std::get_if<ImageLoading::LoadedImage>(&*presented);
+    QVERIFY(loaded);
+    QCOMPARE(loaded->path, path);
+}
+
+void ImageLoadingTest::currentSelectionObsoletesAnInFlightRequest()
+{
+    const QString path = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("obsolete.png"));
+    ImageLoading::Loader loader;
+    int presentedCount = 0;
+    int completedCount = 0;
+    loader.setOutcomeHandler([&presentedCount](ImageLoading::DecodeOutcome) {
+        ++presentedCount;
+    });
+    loader.setLoadedHandler([&completedCount](const ImageLoading::LoadedImage &) {
+        ++completedCount;
+    });
+
+    QVERIFY(loader.request({path}));
+    loader.setCurrentPath(QStringLiteral("already-cached.png"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(completedCount, 1, 5000);
+    QCOMPARE(presentedCount, 0);
+}
+
+void ImageLoadingTest::reusesCachedImageWithoutDecodingAgain()
+{
+    const QString path = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("cached.png"));
+    ImageLoading::Loader loader;
+    int loadedCount = 0;
+    int presentedCount = 0;
+    loader.setLoadedHandler([&loadedCount](const ImageLoading::LoadedImage &) {
+        ++loadedCount;
+    });
+    loader.setOutcomeHandler([&presentedCount](ImageLoading::DecodeOutcome) {
+        ++presentedCount;
+    });
+
+    QVERIFY(loader.request({path}));
+    QTRY_COMPARE_WITH_TIMEOUT(presentedCount, 1, 5000);
+    QCOMPARE(loadedCount, 1);
+
+    QVERIFY(!loader.request({path}));
+    QCOMPARE(presentedCount, 2);
+    QCOMPARE(loadedCount, 1);
+}
+
+void ImageLoadingTest::evictsLeastRecentlyUsedImage()
+{
+    const QString first = writeFixture(QStringLiteral("static.png.base64"),
+                                       QStringLiteral("lru-first.png"));
+    const QString second = writeFixture(QStringLiteral("static.png.base64"),
+                                        QStringLiteral("lru-second.png"));
+    const QString third = writeFixture(QStringLiteral("static.png.base64"),
+                                       QStringLiteral("lru-third.png"));
+    const qsizetype imageBytes =
+        std::get<ImageLoading::LoadedImage>(ImageLoading::decode({first})).sizeInBytes();
+    ImageLoading::Loader loader;
+    QVERIFY(loader.prefetch({first}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(first), 5000);
+    QVERIFY(imageBytes > 0);
+    loader.setCacheBudget(2 * imageBytes);
+    QVERIFY(loader.prefetch({second}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(second), 5000);
+    QVERIFY(!loader.request({first}));
+    loader.setCurrentPath(third);
+    QVERIFY(loader.prefetch({third}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(third), 5000);
+
+    QVERIFY(!loader.request({first}));
+    QVERIFY(loader.request({second}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(second), 5000);
+}
+
+void ImageLoadingTest::doesNotCacheOversizedImage()
+{
+    const QString path = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("oversized.png"));
+    ImageLoading::Loader loader;
+    loader.setCacheBudget(0);
+    int presentedCount = 0;
+    loader.setOutcomeHandler([&presentedCount](ImageLoading::DecodeOutcome) {
+        ++presentedCount;
+    });
+
+    QVERIFY(loader.request({path}));
+    QTRY_COMPARE_WITH_TIMEOUT(presentedCount, 1, 5000);
+
+    QVERIFY(loader.request({path}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(path), 5000);
+}
+
+void ImageLoadingTest::budgetReductionProtectsCurrentRequest()
+{
+    const QString current = writeFixture(QStringLiteral("static.png.base64"),
+                                         QStringLiteral("protected.png"));
+    const QString neighbor = writeFixture(QStringLiteral("static.png.base64"),
+                                          QStringLiteral("evicted.png"));
+    const qsizetype imageBytes =
+        std::get<ImageLoading::LoadedImage>(ImageLoading::decode({current})).sizeInBytes();
+    ImageLoading::Loader loader;
+    QVERIFY(loader.request({current}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(current), 5000);
+    QVERIFY(loader.prefetch({neighbor}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(neighbor), 5000);
+
+    loader.setCacheBudget(imageBytes);
+
+    QCOMPARE(loader.cacheBudget(), imageBytes);
+    QVERIFY(!loader.request({current}));
+    QVERIFY(loader.request({neighbor}));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.isLoading(neighbor), 5000);
+}
+
+void ImageLoadingTest::prefetchesAdjacentImagesWithoutRedundantDecoding()
+{
+    const QString previous = writeFixture(QStringLiteral("static.png.base64"),
+                                          QStringLiteral("previous.png"));
+    const QString next = writeFixture(QStringLiteral("static.png.base64"),
+                                      QStringLiteral("next.png"));
+    ImageLoading::Loader loader;
+    int loadedCount = 0;
+    loader.setLoadedHandler([&loadedCount](const ImageLoading::LoadedImage &) {
+        ++loadedCount;
+    });
+
+    QCOMPARE(loader.prefetchAdjacent(ImageLoading::DecodeRequest{previous},
+                                     ImageLoading::DecodeRequest{next}),
+             QList<QString>({previous, next}));
+    QTRY_COMPARE_WITH_TIMEOUT(loadedCount, 2, 5000);
+    QVERIFY(loader.prefetchAdjacent(ImageLoading::DecodeRequest{previous},
+                                    ImageLoading::DecodeRequest{next})
+                .isEmpty());
+    QCOMPARE(loadedCount, 2);
+}
+
+QTEST_GUILESS_MAIN(ImageLoadingTest)
+
+#include "image_loading_test.moc"
