@@ -1,6 +1,19 @@
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui Test)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+qt_add_executable(image_loading_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/image_loading_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/image_loading.cpp
+    ${PROJECT_SOURCE_DIR}/src/image_loading.h
+)
+target_include_directories(image_loading_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(image_loading_test PRIVATE Qt6::Gui Qt6::Test)
+target_compile_options(image_loading_test PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(image_loading_test PRIVATE
+    FLICK_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+)
+add_test(NAME flick.image-loading COMMAND image_loading_test)
+
 qt_add_executable(flick_application_test
     ${CMAKE_CURRENT_SOURCE_DIR}/flick_application_test.cpp
 )
