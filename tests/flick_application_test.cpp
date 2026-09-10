@@ -97,7 +97,8 @@ private:
                const QString &pickerSelection = {}, int decodeDelayMilliseconds = 0,
                int cacheBudgetBytes = 0, const QString &configHome = {},
                qint64 largeAllocationLimitBytes = 0, const QString &scaleFactor = {},
-               bool darkChrome = false, const QString &settingsRoot = {});
+               bool darkChrome = false, const QString &settingsRoot = {},
+               const QString &delayedDecodePath = {});
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
     void sendCommand(RunningFlick &flick, const QByteArray &command);
@@ -149,7 +150,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
                                  const QString &configHome,
                                  const qint64 largeAllocationLimitBytes,
                                  const QString &scaleFactor, const bool darkChrome,
-                                 const QString &settingsRoot)
+                                 const QString &settingsRoot,
+                                 const QString &delayedDecodePath)
 {
     QVERIFY(flick.environment.isValid());
     const QString config = configHome.isEmpty()
@@ -191,6 +193,10 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     if (decodeDelayMilliseconds > 0) {
         environment.insert(QStringLiteral("FLICK_TEST_DECODE_DELAY_MS"),
                            QString::number(decodeDelayMilliseconds));
+        if (!delayedDecodePath.isEmpty()) {
+            environment.insert(QStringLiteral("FLICK_TEST_DECODE_DELAY_PATH"),
+                               delayedDecodePath);
+        }
     }
     if (cacheBudgetBytes > 0) {
         environment.insert(QStringLiteral("FLICK_TEST_CACHE_BUDGET_BYTES"),
@@ -410,7 +416,7 @@ void FlickApplicationTest::delaysLoadingPresentationAndClearsPreviousImage()
     QVERIFY(!second.isEmpty());
 
     RunningFlick flick;
-    start(flick, {first}, {}, 700);
+    start(flick, {first}, {}, 2000, 0, {}, 0, {}, false, {}, second);
     QVERIFY(containsColor(waitForScreenshot(flick), firstColor));
 
     sendCommand(flick, QByteArrayLiteral("Right"));
