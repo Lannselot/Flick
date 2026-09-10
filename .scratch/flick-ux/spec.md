@@ -33,7 +33,7 @@ or navigation controls. System window decoration remains present outside fullscr
 Commands are exposed through three command surfaces:
 
 1. Keyboard shortcuts are the fastest path.
-2. The viewport context menu is the complete nearby path.
+2. The viewing-surface context menu is the complete nearby path.
 3. The platform application menu exposes conventional Open, View, Image, Help, and Settings entry
    points.
 
@@ -152,7 +152,7 @@ available.
 Use a compact native dialog with three groups:
 
 - Navigation: primary wheel action.
-- Appearance: viewport background and status-overlay visibility.
+- Appearance: viewing-surface background and status-overlay visibility.
 - Performance & Window: decoded cache budget and geometry restoration.
 
 Changes preview immediately to preserve the existing settings contract. **Apply** commits the
@@ -191,10 +191,12 @@ treated as implementation constants now.
 ## Motion
 
 - Fade the status overlay over 140–180 ms.
-- Reveal presentation states with a short opacity transition and no slide.
-- Do not animate image navigation.
+- Ordinary browsing transitions do not fade or slide the image, including the Loading-to-Displayed
+  path.
+- Optional short opacity reveals are limited to independently entered in-surface cards and
+  transient feedback; they never delay or hide a state change.
 - Zoom and pan follow input directly without decorative easing.
-- Disable optional transitions when the platform requests reduced motion.
+- Disable optional opacity transitions when the platform requests reduced motion.
 
 ## Platform Adaptation
 

@@ -231,9 +231,9 @@ void ViewingSurface::beginLoading(const QString &filename) {
   showPresentation(loadingState_, State::Loading);
   loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
 }
-void ViewingSurface::showDisplayed(bool animate) {
+void ViewingSurface::showDisplayed() {
   loadingTimer_->stop();
-  showPresentation(displayedContent_, State::Displayed, animate);
+  showPresentation(displayedContent_, State::Displayed);
 }
 void ViewingSurface::showError(const QString &filename,
                                const QString &details) {
@@ -432,6 +432,42 @@ QByteArray ViewingSurface::primaryActionDescription() const {
   }
   return {};
 }
+#ifdef FLICK_ENABLE_TEST_HARNESS
+QByteArray ViewingSurface::motionContractDescription() const {
+  const auto transition = [](State state) {
+    return usesOptionalOpacity(state) ? QByteArrayLiteral("optional-opacity")
+                                      : QByteArrayLiteral("immediate");
+  };
+  return QByteArrayLiteral("empty=") + transition(State::Empty) +
+         QByteArrayLiteral("|loading=") + transition(State::Loading) +
+         QByteArrayLiteral("|displayed=") + transition(State::Displayed) +
+         QByteArrayLiteral("|error=") + transition(State::Error) +
+         QByteArrayLiteral("|large-image=") +
+         transition(State::LargeImageConfirmation) +
+         QByteArrayLiteral("|reduced-motion=immediate");
+}
+QByteArray ViewingSurface::activeTransitionDescription() const {
+  const auto name = [this] {
+    switch (state_) {
+    case State::Empty:
+      return QByteArrayLiteral("empty");
+    case State::Loading:
+      return QByteArrayLiteral("loading");
+    case State::Displayed:
+      return QByteArrayLiteral("displayed");
+    case State::Error:
+      return QByteArrayLiteral("error");
+    case State::LargeImageConfirmation:
+      return QByteArrayLiteral("large-image");
+    }
+    return QByteArray{};
+  }();
+  QWidget *current = stack_->currentWidget();
+  return name + (current != nullptr && current->graphicsEffect() != nullptr
+                     ? QByteArrayLiteral("|opacity")
+                     : QByteArrayLiteral("|immediate"));
+}
+#endif
 
 void ViewingSurface::resizeEvent(QResizeEvent *event) {
   QWidget::resizeEvent(event);
@@ -444,11 +480,15 @@ void ViewingSurface::positionStatus() {
   statusDisplay_->move((width() - statusDisplay_->width()) / 2,
                        qMax(12, height() - statusDisplay_->height() - 20));
 }
-void ViewingSurface::showPresentation(QWidget *widget, State state,
-                                      bool animate) {
+bool ViewingSurface::usesOptionalOpacity(State state) {
+  return state == State::Empty || state == State::Error ||
+         state == State::LargeImageConfirmation;
+}
+void ViewingSurface::showPresentation(QWidget *widget, State state) {
   state_ = state;
   stack_->setCurrentWidget(widget);
-  if (!animate || qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION") ||
+  if (!usesOptionalOpacity(state) ||
+      qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION") ||
       style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, this) <=
           0 ||
       !isVisible())

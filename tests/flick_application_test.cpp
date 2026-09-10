@@ -73,6 +73,7 @@ private slots:
     void restoresViewingFocusAndAppliesEscapePrecedence();
     void revealsCurrentFileAndReportsExternalActionFailures();
     void exposesAccessibleKeyboardActions();
+    void usesViewingSurfaceVocabularyAndMotionContract();
 
 private:
     struct RunningFlick
@@ -1339,7 +1340,7 @@ void FlickApplicationTest::settingsDialogPreviewsCommitsRollsBackAndResets()
 
     sendCommand(flick, QByteArrayLiteral("OpenSettings"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsDialogStructure")),
-             QByteArrayLiteral("Navigation[Mouse wheel action]|Appearance[Viewport background|Show "
+             QByteArrayLiteral("Navigation[Mouse wheel action]|Appearance[Viewing surface background|Show "
                                "status overlay]|Performance & Window[Decoded cache budget|Restore "
                                "window size and position]|Reset Defaults|Cancel|Apply"));
     const QList<QByteArray> dialogSize =
@@ -1351,7 +1352,7 @@ void FlickApplicationTest::settingsDialogPreviewsCommitsRollsBackAndResets()
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsDialogFocusOrder"));
     qsizetype previousPosition = -1;
     for (const QByteArray &name :
-         {QByteArrayLiteral("Mouse wheel action"), QByteArrayLiteral("Viewport background"),
+         {QByteArrayLiteral("Mouse wheel action"), QByteArrayLiteral("Viewing surface background"),
           QByteArrayLiteral("Show status overlay"), QByteArrayLiteral("Decoded cache budget"),
           QByteArrayLiteral("Restore window size and position")}) {
         const qsizetype position = focusOrder.indexOf(name);
@@ -1957,7 +1958,7 @@ void FlickApplicationTest::exposesAccessibleKeyboardActions()
 
     const QByteArray accessibility =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("AccessibilityState"));
-    QVERIFY(accessibility.contains("Image viewport|AccessibleRole=Graphic|"));
+    QVERIFY(accessibility.contains("Viewing surface|AccessibleRole=Graphic|"));
     const QByteArray openAction =
         QByteArrayLiteral("Open Image|") +
         QKeySequence(QKeySequence::Open).toString(QKeySequence::NativeText).toUtf8();
@@ -1980,6 +1981,44 @@ void FlickApplicationTest::exposesAccessibleKeyboardActions()
     QVERIFY(accessibility.contains(accessibleAction(
         "Toggle Fullscreen", QKeySequence(Qt::Key_F11))));
     QVERIFY(accessibility.contains("Settings|"));
+}
+
+void FlickApplicationTest::usesViewingSurfaceVocabularyAndMotionContract()
+{
+    RunningFlick flick;
+    start(flick);
+    waitForScreenshot(flick);
+
+    sendCommand(flick, QByteArrayLiteral("OpenSettings"));
+    const QByteArray settings =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsDialogStructure"));
+    QVERIFY(settings.contains("Viewing surface background"));
+    QVERIFY(!settings.contains("Viewport background"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("BackgroundPickerTitle")),
+             QByteArrayLiteral("Viewing Surface Background"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationMotionContract")),
+             QByteArrayLiteral("empty=optional-opacity|loading=immediate|displayed=immediate|"
+                               "error=optional-opacity|large-image=optional-opacity|"
+                               "reduced-motion=immediate"));
+
+    QTemporaryDir invalidImageDirectory;
+    QVERIFY(invalidImageDirectory.isValid());
+    const QString invalidImage =
+        invalidImageDirectory.filePath(QStringLiteral("invalid.png"));
+    QFile invalidFile(invalidImage);
+    QVERIFY(invalidFile.open(QIODevice::WriteOnly));
+    QCOMPARE(invalidFile.write("not an image"), 12);
+    invalidFile.close();
+    RunningFlick reducedMotion;
+    start(reducedMotion, {invalidImage});
+    waitForScreenshot(reducedMotion);
+    QVERIFY(sendQueryAndWaitForReply(reducedMotion, QByteArrayLiteral("PresentationState"))
+                .startsWith("error|"));
+    QCOMPARE(sendQueryAndWaitForReply(reducedMotion,
+                                      QByteArrayLiteral("ActivePresentationTransition")),
+             QByteArrayLiteral("error|immediate"));
 }
 
 QTEST_MAIN(FlickApplicationTest)

@@ -43,7 +43,7 @@ session type, compositor version, Qt version, scaling factor, and result.
 | Context menu lists the viewing commands and native shortcut labels | Right-click and keyboard Menu key | Right-click and keyboard Menu key |
 | Every core workflow completes without a mouse | Open, navigate, zoom, pan, rotate, inspect, copy, reveal, settings, fullscreen | Same |
 | Focus remains visible in Settings, Information, error details, and the large-image confirmation | Tab/Shift+Tab through controls | Tab/Shift+Tab through controls |
-| Screen reader announces the image viewport, status, warnings, and buttons | Orca | Orca or the configured AT-SPI client |
+| Screen reader announces the viewing surface, status, warnings, and buttons | Orca | Orca or the configured AT-SPI client |
 | Light, dark, and high-contrast themes keep text and focus legible | System Appearance variants | Global Theme/Colors variants |
 | 100%, 150%, and 200% scaling preserve usable sizes and sharp text | Display settings | Display Configuration |
 | `F11`/`Esc`, transient status, and pointer hiding behave equivalently | Native Wayland and X11 | Native Wayland and X11 |

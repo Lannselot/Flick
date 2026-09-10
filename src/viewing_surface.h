@@ -42,7 +42,7 @@ public:
 
   void showEmpty();
   void beginLoading(const QString &filename);
-  void showDisplayed(bool animate = true);
+  void showDisplayed();
   void showError(const QString &filename, const QString &details);
   void showLargeImageConfirmation(const QString &message);
   void dismissLargeImageConfirmation();
@@ -70,12 +70,17 @@ public:
   QByteArray presentationDescription() const;
   QByteArray errorDescription() const;
   QByteArray primaryActionDescription() const;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  QByteArray motionContractDescription() const;
+  QByteArray activeTransitionDescription() const;
+#endif
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
 
 private:
-  void showPresentation(QWidget *widget, State state, bool animate = true);
+  void showPresentation(QWidget *widget, State state);
+  static bool usesOptionalOpacity(State state);
   void positionStatus();
 
   Commands commands_;

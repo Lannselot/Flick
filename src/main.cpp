@@ -173,7 +173,7 @@ class ViewerWindow final : public QWidget
         imageLabel_ = new ImageCanvas;
         imageLabel_->setObjectName(QStringLiteral("imageLabel"));
         imageLabel_->setAlignment(Qt::AlignCenter);
-        imageLabel_->setAccessibleName(tr("Image viewport"));
+        imageLabel_->setAccessibleName(tr("Viewing surface"));
         imageLabel_->setAccessibleDescription(
             tr("Displays the current image; use the application actions to "
                "navigate and zoom."));
@@ -374,6 +374,23 @@ class ViewerWindow final : public QWidget
     {
         return surface_->primaryActionDescription();
     }
+
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    QByteArray presentationMotionContract() const
+    {
+        return surface_->motionContractDescription();
+    }
+
+    QByteArray activePresentationTransition() const
+    {
+        return surface_->activeTransitionDescription();
+    }
+
+    QByteArray backgroundPickerTitle() const
+    {
+        return viewingSurfaceBackgroundPickerTitle().toUtf8();
+    }
+#endif
 
     QByteArray largeImageState() const
     {
@@ -786,6 +803,11 @@ class ViewerWindow final : public QWidget
     }
 
   private:
+    QString viewingSurfaceBackgroundPickerTitle() const
+    {
+        return tr("Viewing Surface Background");
+    }
+
     struct SettingsValues
     {
         WheelAction wheelAction = WheelAction::Navigate;
@@ -1070,10 +1092,10 @@ class ViewerWindow final : public QWidget
         appearanceLayout->setContentsMargins(8, 12, 8, 6);
         appearanceLayout->setVerticalSpacing(4);
         settingsBackground_ = new QPushButton(appearance);
-        settingsBackground_->setAccessibleName(tr("Viewport background"));
+        settingsBackground_->setAccessibleName(tr("Viewing surface background"));
         settingsStatus_ = new QCheckBox(tr("Show status overlay"), appearance);
         settingsStatus_->setAccessibleName(tr("Show status overlay"));
-        appearanceLayout->addRow(tr("Viewport background:"), settingsBackground_);
+        appearanceLayout->addRow(tr("Viewing surface background:"), settingsBackground_);
         appearanceLayout->addRow(QString{}, settingsStatus_);
         layout->addWidget(appearance);
 
@@ -1106,7 +1128,7 @@ class ViewerWindow final : public QWidget
         QObject::connect(settingsGeometry_, &QCheckBox::toggled, settingsDialog_, previewControls);
         QObject::connect(settingsBackground_, &QPushButton::clicked, settingsDialog_, [this] {
             const QColor selected = QColorDialog::getColor(
-                settingsDialogBackground_, settingsDialog_, tr("Viewport Background"));
+                settingsDialogBackground_, settingsDialog_, viewingSurfaceBackgroundPickerTitle());
             if (selected.isValid()) {
                 settingsDialogBackground_ = selected;
                 settingsBackground_->setText(selected.name());
@@ -1495,9 +1517,8 @@ class ViewerWindow final : public QWidget
         openDirectoryBacked(selectedPath);
     }
 
-    void displaySelectedImage(const bool animateDisplayed = true)
+    void displaySelectedImage()
     {
-        animateDisplayedPresentation_ = animateDisplayed;
         dismissLargeImageWarning();
         rotationQuarterTurns_ = 0;
         const QString currentPath = browsingSequence_.selectedPath();
@@ -1588,7 +1609,7 @@ class ViewerWindow final : public QWidget
         if (currentImage_.frames.size() > 1) {
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
-        surface_->showDisplayed(animateDisplayedPresentation_);
+        surface_->showDisplayed();
         if (path == pendingFilePickerPath_) {
             QSettings settings;
             settings.setValue(QStringLiteral("filePicker/lastDirectory"),
@@ -1636,7 +1657,7 @@ class ViewerWindow final : public QWidget
         }
 
         surface_->queueFeedback(tr("Current image is no longer available"));
-        displaySelectedImage(false);
+        displaySelectedImage();
     }
 
     void showFrame(const int index)
@@ -1899,7 +1920,7 @@ class ViewerWindow final : public QWidget
             return;
         }
         surface_->markBrowsingTeachingComplete();
-        displaySelectedImage(false);
+        displaySelectedImage();
     }
 
     void showFeedback(const QString &message)
@@ -1953,7 +1974,6 @@ class ViewerWindow final : public QWidget
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
     AnimationPlayback animationPlayback_ = AnimationPlayback::Finished;
-    bool animateDisplayedPresentation_ = true;
     WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;
     int rotationQuarterTurns_ = 0;
@@ -2106,6 +2126,18 @@ int main(int argc, char *argv[])
                 return;
             } else if (input.startsWith("PresentationState")) {
                 fprintf(stdout, "%s\n", window.presentationState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("PresentationMotionContract")) {
+                fprintf(stdout, "%s\n", window.presentationMotionContract().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ActivePresentationTransition")) {
+                fprintf(stdout, "%s\n", window.activePresentationTransition().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("BackgroundPickerTitle")) {
+                fprintf(stdout, "%s\n", window.backgroundPickerTitle().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SaveWindowGeometry")) {
