@@ -65,7 +65,7 @@ private slots:
     void firstUseTeachingPersistsAfterBrowsingIsLearned();
     void fullscreenTeachingAppearsOnlyOnFirstEntry();
     void fullscreenInactivityHidesStatusAndPointerWithoutBlockingKeyboard();
-    void informationShowsEssentialFacts();
+    void informationDialogStaysLiveWhileBrowsing();
     void copiesPathAndRenderedImageAndExposesContextCommands();
     void exposesGroupedCommandSurfacesWithoutNavigationRows();
     void restoresViewingFocusAndAppliesEscapePrecedence();
@@ -1609,7 +1609,7 @@ void FlickApplicationTest::fullscreenInactivityHidesStatusAndPointerWithoutBlock
     QCOMPARE(state.at(2), QByteArrayLiteral("pointer-visible"));
 }
 
-void FlickApplicationTest::informationShowsEssentialFacts()
+void FlickApplicationTest::informationDialogStaysLiveWhileBrowsing()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -1617,6 +1617,11 @@ void FlickApplicationTest::informationShowsEssentialFacts()
         writeImage(directory, QStringLiteral("facts.png"), QColor(Qt::cyan), QSize(32, 24));
     const QString second =
         writeImage(directory, QStringLiteral("next.png"), QColor(Qt::magenta), QSize(16, 12));
+    const QString unavailable = directory.filePath(QStringLiteral("unavailable.png"));
+    QFile unavailableFile(unavailable);
+    QVERIFY(unavailableFile.open(QIODevice::WriteOnly));
+    QVERIFY(unavailableFile.write("not an image") > 0);
+    unavailableFile.close();
     QVERIFY(!first.isEmpty());
     QVERIFY(!second.isEmpty());
 
@@ -1632,7 +1637,68 @@ void FlickApplicationTest::informationShowsEssentialFacts()
     QVERIFY(information.contains(QByteArray::number(QFileInfo(first).size())));
     QVERIFY(information.contains("Modified"));
     QVERIFY(information.contains("100%"));
-    QVERIFY(information.contains("1 / 2"));
+    QVERIFY(information.contains("Rotation: 0°"));
+    QVERIFY(information.contains("Animation: Static image"));
+    QVERIFY(information.contains("1 / 3"));
+
+    sendCommand(flick, QByteArrayLiteral("FocusViewingSurface"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Right"));
+    const QByteArray nextInformation =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"));
+    QVERIFY(nextInformation.contains(QFileInfo(second).canonicalFilePath().toUtf8()));
+    QVERIFY(nextInformation.contains("16 × 12"));
+    QVERIFY(nextInformation.contains("2 / 3"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationDialogState"))
+                .startsWith("open|"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("viewing-surface"));
+    const QList<QByteArray> dialogSize =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationDialogState"))
+            .mid(5)
+            .split('x');
+    QCOMPARE(dialogSize.size(), 2);
+    QVERIFY(dialogSize.at(0).toInt() <= 480);
+    QVERIFY(dialogSize.at(1).toInt() <= 320);
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("RotateRight"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"))
+                .contains("Rotation: 90°"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlPlus"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"))
+                .contains("Zoom: 125%"));
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Right"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"))
+            .contains("Unavailable"),
+        3000);
+
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationDialogState")),
+             QByteArrayLiteral("closed"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("viewing-surface"));
+
+    const QString animated =
+        writeFixture(QStringLiteral("animated.gif.base64"), QStringLiteral("animated.gif"));
+    QVERIFY(!animated.isEmpty());
+    RunningFlick animation;
+    start(animation, {animated}, {}, 0, 0, {}, 0, QStringLiteral("2"));
+    waitForScreenshot(animation);
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Information"));
+    QVERIFY(sendQueryAndWaitForReply(animation, QByteArrayLiteral("InformationState"))
+                .contains("Animation: Playing"));
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Escape"));
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Space"));
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Information"));
+    QVERIFY(sendQueryAndWaitForReply(animation, QByteArrayLiteral("InformationState"))
+                .contains("Animation: Paused"));
+    const QList<QByteArray> highDpiSize =
+        sendQueryAndWaitForReply(animation, QByteArrayLiteral("InformationDialogState"))
+            .mid(5)
+            .split('x');
+    QVERIFY(highDpiSize.at(0).toInt() <= 480);
+    QVERIFY(highDpiSize.at(1).toInt() <= 320);
 }
 
 void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()

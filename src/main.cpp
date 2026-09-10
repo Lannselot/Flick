@@ -32,6 +32,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QFrame>
 #include <QFormLayout>
 #include <QGraphicsOpacityEffect>
 #include <QGroupBox>
@@ -534,6 +535,20 @@ public:
         return informationText_.toUtf8();
     }
 
+    QByteArray informationDialogState() const
+    {
+        return informationDialog_ == nullptr
+                   ? QByteArrayLiteral("closed")
+                   : QByteArrayLiteral("open|") + QByteArray::number(informationDialog_->width()) +
+                         'x' + QByteArray::number(informationDialog_->height());
+    }
+
+    void focusViewingSurfaceForTest()
+    {
+        activateWindow();
+        viewport_->setFocus(Qt::OtherFocusReason);
+    }
+
     QByteArray feedbackState() const
     {
         return statusDisplay_->text().toUtf8();
@@ -850,6 +865,10 @@ protected:
 
     void keyPressEvent(QKeyEvent *event) override
     {
+        if (event->key() == Qt::Key_Escape && informationDialog_ != nullptr) {
+            informationDialog_->close();
+            return;
+        }
         if (event->key() == Qt::Key_F11) {
             toggleFullscreen();
             return;
@@ -1442,21 +1461,46 @@ private:
 
     QString imageInformation() const
     {
-        const QFileInfo file(currentImage_.path);
+        const QString selectedPath = browsingSequence_.selectedPath();
+        if (selectedPath.isEmpty()) {
+            return tr("No current image");
+        }
+        const QFileInfo file(selectedPath);
         QString format = file.suffix().toUpper();
         if (format == QStringLiteral("JPG")) {
             format = QStringLiteral("JPEG");
         }
-        return tr("Path: %1\nFormat: %2\nDimensions: %3 × %4\nSize: %5 bytes\n"
-                  "Modified: %6\nZoom: %7%\nPosition: %8 / %9")
+        const bool displayed = !image_.isNull() && currentImage_.path == selectedPath;
+        const QString dimensions =
+            displayed ? tr("%1 × %2").arg(image_.width()).arg(image_.height())
+                      : presentationState_ == PresentationState::Error ? tr("Unavailable")
+                                                                       : tr("Loading…");
+        const QString animation =
+            !displayed ? tr("Unavailable")
+            : currentImage_.frames.size() < 2 ? tr("Static image")
+            : animationPaused_ ? tr("Paused")
+                               : tr("Playing");
+        return tr("Path: %1\nFormat: %2\nDimensions: %3\nSize: %4 bytes\n"
+                  "Modified: %5\nZoom: %6%\nRotation: %7°\nAnimation: %8\nPosition: %9 / %10")
             .arg(file.absoluteFilePath(), format)
-            .arg(image_.width())
-            .arg(image_.height())
+            .arg(dimensions)
             .arg(file.size())
             .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
             .arg(qRound(zoom_ * 100))
-            .arg(browsingSequence_.paths().indexOf(currentImage_.path) + 1)
+            .arg(rotationQuarterTurns_ * 90)
+            .arg(animation)
+            .arg(browsingSequence_.selectedIndex() + 1)
             .arg(browsingSequence_.paths().size());
+    }
+
+    void updateInformation()
+    {
+        if (informationDialog_ == nullptr) {
+            return;
+        }
+        informationText_ = imageInformation();
+        informationFacts_->setText(informationText_);
+        informationDialog_->adjustSize();
     }
 
     void showInformation()
@@ -1464,20 +1508,38 @@ private:
         if (browsingSequence_.selectedIndex() < 0 || image_.isNull()) {
             return;
         }
+        if (informationDialog_ != nullptr) {
+            informationDialog_->raise();
+            informationDialog_->activateWindow();
+            return;
+        }
         informationText_ = imageInformation();
-        auto *dialog = new QDialog(this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setWindowTitle(tr("Image Information"));
-        auto *layout = new QVBoxLayout(dialog);
-        auto *facts = new QLabel(informationText_, dialog);
-        facts->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-        layout->addWidget(facts);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        informationDialog_ = new QDialog(this, Qt::Tool);
+        informationDialog_->setAttribute(Qt::WA_DeleteOnClose);
+        informationDialog_->setModal(false);
+        informationDialog_->setWindowTitle(tr("Image Information"));
+        informationDialog_->setMaximumSize(480, 320);
+        auto *layout = new QVBoxLayout(informationDialog_);
+        informationFacts_ = new QLabel(informationText_, informationDialog_);
+        informationFacts_->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                    Qt::TextSelectableByKeyboard);
+        informationFacts_->setWordWrap(true);
+        informationFacts_->setAccessibleName(tr("Current image information"));
+        auto *factsViewport = new QScrollArea(informationDialog_);
+        factsViewport->setWidgetResizable(true);
+        factsViewport->setFrameShape(QFrame::NoFrame);
+        factsViewport->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        factsViewport->setWidget(informationFacts_);
+        factsViewport->setMinimumSize(360, 180);
+        layout->addWidget(factsViewport);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, informationDialog_);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, informationDialog_, &QDialog::close);
         layout->addWidget(buttons);
-        dialog->show();
-        QObject::connect(dialog, &QDialog::finished, this,
+        informationDialog_->show();
+        QObject::connect(informationDialog_, &QDialog::finished, this,
                          [this] {
+                             informationDialog_ = nullptr;
+                             informationFacts_ = nullptr;
                              QTimer::singleShot(0, this, [this] { restoreViewingFocus(); });
                          });
     }
@@ -1750,6 +1812,7 @@ private:
         loadingIndicator_->hide();
         loadingFilename_->hide();
         showPresentation(loadingState_, PresentationState::Loading);
+        updateInformation();
         loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
         requestDecode(currentPath);
     }
@@ -1765,6 +1828,7 @@ private:
         loadingIndicator_->hide();
         loadingFilename_->hide();
         showPresentation(loadingState_, PresentationState::Loading);
+        updateInformation();
         loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
         retryDecode(currentPath);
     }
@@ -1778,6 +1842,7 @@ private:
             loadingIndicator_->hide();
             loadingFilename_->hide();
             showPresentation(loadingState_, PresentationState::Loading);
+            updateInformation();
             loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
             retryDecode(approvedPath, true);
         }
@@ -1842,7 +1907,10 @@ private:
         }
         commandAction("viewerAnimationAction")
             ->setEnabled(currentImage_.frames.size() > 1);
-        restoreViewingFocus();
+        updateInformation();
+        if (informationDialog_ == nullptr) {
+            restoreViewingFocus();
+        }
         setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
         if (!pendingFeedback_.isEmpty()) {
             const QString feedback = pendingFeedback_;
@@ -1865,6 +1933,7 @@ private:
         }
         if (outcome == BrowsingSequence::ReconcileOutcome::SelectionPreserved) {
             updateStatusText();
+            updateInformation();
             prefetchNeighbors();
             return;
         }
@@ -1943,6 +2012,7 @@ private:
         }
         zoom_ = std::clamp(zoom, 0.01, 64.0);
         renderImage();
+        updateInformation();
         showStatus(false);
     }
 
@@ -1990,6 +2060,7 @@ private:
             rotationQuarterTurns_ += 4;
         }
         renderImage();
+        updateInformation();
         scheduleCenterView();
         showStatus(false);
     }
@@ -2072,6 +2143,7 @@ private:
             animationPaused_ = true;
             animationTimer_->stop();
         }
+        updateInformation();
     }
 
     ImageLoading::DecodeRequest decodeRequest(const QString &path,
@@ -2166,6 +2238,7 @@ private:
     {
         loadingTimer_->stop();
         showPresentation(emptyState_, PresentationState::Empty);
+        updateInformation();
     }
 
     void showDecodeError(const ImageLoading::DecodeFailure &failure)
@@ -2179,6 +2252,7 @@ private:
                                       : failure.details);
         errorDetailsButton_->setChecked(false);
         showPresentation(errorState_, PresentationState::Error);
+        updateInformation();
         setWindowTitle(tr("Flick — Error"));
     }
 
@@ -2194,6 +2268,7 @@ private:
                 .arg(confirmation.declaredSize.height())
                 .arg(confirmation.estimatedAllocationBytes / (1024 * 1024)));
         showPresentation(largeImageWarning_, PresentationState::LargeImageConfirmation);
+        updateInformation();
     }
 
     void showPresentation(QWidget *widget, const PresentationState state,
@@ -2279,6 +2354,8 @@ private:
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
     QList<QAction *> imageActions_;
     QString informationText_;
+    QDialog *informationDialog_ = nullptr;
+    QLabel *informationFacts_ = nullptr;
     QMenuBar *applicationMenuBar_ = nullptr;
     QMenu *contextMenu_ = nullptr;
     QDialog *settingsDialog_ = nullptr;
@@ -2469,8 +2546,15 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.uiState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("FocusViewingSurface")) {
+                window.focusViewingSurfaceForTest();
+                return;
             } else if (input.startsWith("InformationState")) {
                 fprintf(stdout, "%s\n", window.informationState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("InformationDialogState")) {
+                fprintf(stdout, "%s\n", window.informationDialogState().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("ClipboardText")) {
