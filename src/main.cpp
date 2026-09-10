@@ -3,19 +3,21 @@
 #include "flick_application.h"
 #include "image_loading.h"
 #include "platform_services.h"
+#include "viewing_surface.h"
 
-#include <QApplication>
+#include "browsing_sequence.h"
+#include <QAbstractButton>
 #include <QAccessible>
 #include <QAccessibleWidget>
 #include <QAction>
 #include <QActionGroup>
-#include <QClipboard>
+#include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
-#include <QColorSpace>
 #include <QColorDialog>
-#include "browsing_sequence.h"
+#include <QColorSpace>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
@@ -23,7 +25,6 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QHash>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -32,29 +33,36 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QFormLayout>
+#include <QFrame>
+#include <QGraphicsOpacityEffect>
+#include <QGroupBox>
+#include <QHash>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLocale>
-#include <QMimeData>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QMouseEvent>
-#include <QPainter>
 #include <QPaintEvent>
+#include <QPainter>
+#include <QPropertyAnimation>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
-#include <QScreen>
-#include <QSettings>
 #include <QSet>
+#include <QSettings>
 #include <QSpinBox>
+#include <QStackedLayout>
+#include <QStyle>
 #include <QTimer>
 #include <QToolButton>
 #include <QTransform>
 #include <QVBoxLayout>
-#include <QWidget>
 #include <QWheelEvent>
+#include <QWidget>
 #include <QWindow>
 
 #include <algorithm>
@@ -72,7 +80,6 @@
 
 namespace {
 constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
-constexpr int StatusVisibilityMilliseconds = 2000;
 constexpr int KeyboardPanStep = 40;
 constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
 
@@ -80,6 +87,13 @@ enum class WheelAction
 {
     Navigate,
     Zoom
+};
+
+enum class AnimationPlayback
+{
+    Playing,
+    Paused,
+    Finished
 };
 
 using ImageLoading::LoadedImage;
@@ -95,7 +109,7 @@ QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
 
 class ImageCanvas final : public QLabel
 {
-public:
+  public:
     void showImage(const QImage &image, const QSize &displayedSize, const QSize &viewportSize)
     {
         image_ = image;
@@ -104,7 +118,15 @@ public:
         update();
     }
 
-protected:
+    void clearImage()
+    {
+        image_ = {};
+        displayedSize_ = {};
+        setFixedSize(QSize());
+        update();
+    }
+
+  protected:
     void paintEvent(QPaintEvent *event) override
     {
         if (image_.isNull()) {
@@ -114,8 +136,8 @@ protected:
         painter.setClipRect(event->rect());
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
         const QRect target((width() - displayedSize_.width()) / 2,
-                           (height() - displayedSize_.height()) / 2,
-                           displayedSize_.width(), displayedSize_.height());
+                           (height() - displayedSize_.height()) / 2, displayedSize_.width(),
+                           displayedSize_.height());
         const QRect visibleTarget = target.intersected(event->rect());
         if (visibleTarget.isEmpty()) {
             return;
@@ -129,19 +151,19 @@ protected:
         painter.drawImage(QRectF(visibleTarget), image_, source);
     }
 
-private:
+  private:
     QImage image_;
     QSize displayedSize_;
 };
 
 class ViewerWindow final : public QWidget
 {
-public:
+  public:
     ViewerWindow(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices)
-        : platformServices_(std::move(platformServices))
-        , imageLoader_(this)
+        : platformServices_(std::move(platformServices)), imageLoader_(this)
     {
         setWindowTitle(QStringLiteral("Flick"));
+        setObjectName(QStringLiteral("viewingSurfaceFocus"));
         setMinimumSize(480, 320);
         setAcceptDrops(true);
 
@@ -151,9 +173,10 @@ public:
         imageLabel_ = new ImageCanvas;
         imageLabel_->setObjectName(QStringLiteral("imageLabel"));
         imageLabel_->setAlignment(Qt::AlignCenter);
-        imageLabel_->setAccessibleName(tr("Image viewport"));
+        imageLabel_->setAccessibleName(tr("Viewing surface"));
         imageLabel_->setAccessibleDescription(
-            tr("Displays the current image; use the application actions to navigate and zoom."));
+            tr("Displays the current image; use the application actions to "
+               "navigate and zoom."));
         imageLabel_->setMouseTracking(true);
         imageLabel_->installEventFilter(this);
 
@@ -166,7 +189,26 @@ public:
         viewport_->setWidget(imageLabel_);
         viewport_->viewport()->installEventFilter(this);
         viewport_->viewport()->setMouseTracking(true);
-        viewport_->setContextMenuPolicy(Qt::ActionsContextMenu);
+        viewport_->setContextMenuPolicy(Qt::CustomContextMenu);
+        surface_ = new ViewingSurface(
+            viewport_,
+            {.chooseFile = [this] { openFromFilePicker(); },
+             .retry = [this] { retryCurrentImage(); },
+             .approveLargeImage = [this] { approveLargeImage(); },
+             .rejectLargeImage = [this] { rejectLargeImage(); },
+             .currentImageIsLoading =
+                 [this] { return imageLoader_.isLoading(browsingSequence_.selectedPath()); },
+             .hasCurrentImage = [this] { return browsingSequence_.selectedIndex() >= 0; },
+             .statusContext = [this] {
+                 return ViewingSurface::StatusContext{
+                     QFileInfo(browsingSequence_.selectedPath()).fileName(),
+                     browsingSequence_.selectedIndex() + 1,
+                     static_cast<int>(browsingSequence_.paths().size()), qRound(zoom_ * 100)};
+             },
+             .isFullscreen = [this] { return isFullScreen(); },
+             .hidePointer = [this] { viewport_->viewport()->setCursor(Qt::BlankCursor); }});
+        surface_->installEventFilter(this);
+        layout->addWidget(surface_);
         auto *wheelActionGroup = new QActionGroup(this);
         wheelActionGroup->setExclusive(true);
         auto *navigateWithWheel = new QAction(tr("Wheel navigates images"), wheelActionGroup);
@@ -177,19 +219,12 @@ public:
         zoomWithWheel->setCheckable(true);
         viewport_->addAction(navigateWithWheel);
         viewport_->addAction(zoomWithWheel);
-        const QString storedWheelAction =
-            QSettings().value(QStringLiteral("view/wheelAction"), QStringLiteral("navigate"))
-                .toString();
-        wheelAction_ =
-            storedWheelAction == QStringLiteral("zoom") ? WheelAction::Zoom : WheelAction::Navigate;
         navigateWithWheel->setChecked(wheelAction_ == WheelAction::Navigate);
         zoomWithWheel->setChecked(wheelAction_ == WheelAction::Zoom);
-        QObject::connect(navigateWithWheel, &QAction::triggered, this, [this] {
-            setWheelAction(WheelAction::Navigate);
-        });
-        QObject::connect(zoomWithWheel, &QAction::triggered, this, [this] {
-            setWheelAction(WheelAction::Zoom);
-        });
+        QObject::connect(navigateWithWheel, &QAction::triggered, this,
+                         [this] { setWheelAction(WheelAction::Navigate); });
+        QObject::connect(zoomWithWheel, &QAction::triggered, this,
+                         [this] { setWheelAction(WheelAction::Zoom); });
         addViewerActions();
         addImageActions();
 
@@ -202,44 +237,13 @@ public:
         });
         setFocusPolicy(Qt::StrongFocus);
 
-        boundaryMessage_ = new QLabel;
-        boundaryMessage_->setAlignment(Qt::AlignCenter);
-        boundaryMessage_->setAccessibleName(tr("Sequence boundary message"));
-        boundaryMessage_->hide();
-        boundaryTimer_ = new QTimer(this);
-        boundaryTimer_->setSingleShot(true);
-        QObject::connect(boundaryTimer_, &QTimer::timeout, boundaryMessage_, &QWidget::hide);
         animationTimer_ = new QTimer(this);
         animationTimer_->setSingleShot(true);
-        QObject::connect(animationTimer_, &QTimer::timeout, this, [this] {
-            advanceAnimation();
-        });
+        QObject::connect(animationTimer_, &QTimer::timeout, this, [this] { advanceAnimation(); });
         directoryWatcher_ = new QFileSystemWatcher(this);
         QObject::connect(directoryWatcher_, &QFileSystemWatcher::directoryChanged, this,
-                         [this] {
-                             refreshDirectorySequence();
-                         });
+                         [this] { refreshDirectorySequence(); });
 
-        statusDisplay_ = new QLabel(viewport_->viewport());
-        statusDisplay_->setAlignment(Qt::AlignCenter);
-        statusDisplay_->setAccessibleName(tr("Image status"));
-        statusDisplay_->setAccessibleDescription(
-            tr("Current filename, sequence position, and zoom level."));
-        statusDisplay_->setAttribute(Qt::WA_TransparentForMouseEvents);
-        statusDisplay_->setAutoFillBackground(true);
-        statusDisplay_->setBackgroundRole(QPalette::ToolTipBase);
-        statusDisplay_->setForegroundRole(QPalette::ToolTipText);
-        statusDisplay_->setFrameStyle(QFrame::StyledPanel | QFrame::Plain);
-        statusDisplay_->setMargin(6);
-        statusDisplay_->hide();
-        statusTimer_ = new QTimer(this);
-        statusTimer_->setSingleShot(true);
-        QObject::connect(statusTimer_, &QTimer::timeout, this, [this] {
-            statusDisplay_->hide();
-            if (isFullScreen()) {
-                viewport_->viewport()->setCursor(Qt::BlankCursor);
-            }
-        });
         loadSettings();
 
         imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
@@ -256,85 +260,17 @@ public:
             showDecodeError(std::get<ImageLoading::DecodeFailure>(outcome));
         });
 
-        emptyState_ = new QLabel(tr("No image open"));
-        emptyState_->setAlignment(Qt::AlignCenter);
-        emptyState_->setAccessibleName(tr("No image open"));
-
-        errorState_ = new QWidget;
-        auto *errorLayout = new QVBoxLayout(errorState_);
-        errorLayout->setAlignment(Qt::AlignCenter);
-        errorExplanation_ = new QLabel;
-        errorExplanation_->setAlignment(Qt::AlignCenter);
-        errorExplanation_->setWordWrap(true);
-        errorExplanation_->setAccessibleName(tr("Image error"));
-        errorDetailsButton_ = new QToolButton;
-        errorDetailsButton_->setText(tr("Technical details"));
-        errorDetailsButton_->setAccessibleDescription(
-            tr("Shows or hides technical decoder details."));
-        errorDetailsButton_->setCheckable(true);
-        errorDetails_ = new QLabel;
-        errorDetails_->setAlignment(Qt::AlignCenter);
-        errorDetails_->setWordWrap(true);
-        errorDetails_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        errorDetails_->setTextInteractionFlags(errorDetails_->textInteractionFlags() |
-                                               Qt::TextSelectableByKeyboard);
-        errorDetails_->hide();
-        QObject::connect(errorDetailsButton_, &QToolButton::toggled, errorDetails_,
-                         &QWidget::setVisible);
-        errorLayout->addWidget(errorExplanation_);
-        errorLayout->addWidget(errorDetailsButton_, 0, Qt::AlignHCenter);
-        errorLayout->addWidget(errorDetails_);
-        errorState_->hide();
-
-        largeImageWarning_ = new QWidget;
-        auto *warningLayout = new QVBoxLayout(largeImageWarning_);
-        warningLayout->setAlignment(Qt::AlignCenter);
-        largeImageExplanation_ = new QLabel;
-        largeImageExplanation_->setAlignment(Qt::AlignCenter);
-        largeImageExplanation_->setWordWrap(true);
-        largeImageExplanation_->setAccessibleName(tr("Large image warning"));
-        auto *warningButtons = new QWidget;
-        auto *warningButtonLayout = new QHBoxLayout(warningButtons);
-        auto *approveLarge = new QPushButton(tr("Decode anyway"));
-        approveLarge->setObjectName(QStringLiteral("approveLargeImage"));
-        approveLarge->setAccessibleDescription(
-            tr("Allows decoding of the current exceptionally large image."));
-        auto *rejectLarge = new QPushButton(tr("Cancel"));
-        rejectLarge->setObjectName(QStringLiteral("rejectLargeImage"));
-        rejectLarge->setAccessibleDescription(
-            tr("Cancels decoding of the current exceptionally large image."));
-        warningButtonLayout->addWidget(approveLarge);
-        warningButtonLayout->addWidget(rejectLarge);
-        QObject::connect(approveLarge, &QPushButton::clicked, this, [this] {
-            approveLargeImage();
-        });
-        QObject::connect(rejectLarge, &QPushButton::clicked, this, [this] {
-            rejectLargeImage();
-        });
-        warningLayout->addWidget(largeImageExplanation_);
-        warningLayout->addWidget(warningButtons, 0, Qt::AlignHCenter);
-        largeImageWarning_->hide();
-
-        layout->addWidget(viewport_);
-        layout->addWidget(emptyState_);
-        layout->addWidget(errorState_);
-        layout->addWidget(largeImageWarning_);
-        layout->addWidget(boundaryMessage_);
         showEmptyState();
 
         auto *settingsAction = new QAction(tr("Settings"), this);
         settingsAction->setObjectName(QStringLiteral("settingsAction"));
         settingsAction->setShortcut(QKeySequence::Preferences);
         settingsAction->setShortcutContext(Qt::WindowShortcut);
-        QObject::connect(settingsAction, &QAction::triggered, this, [this] {
-            showSettings();
-        });
+        QObject::connect(settingsAction, &QAction::triggered, this, [this] { showSettings(); });
         viewport_->addAction(settingsAction);
         addAction(settingsAction);
 
-#if defined(Q_OS_MACOS)
-        addMacApplicationMenu(settingsAction);
-#endif
+        addCommandSurfaces(settingsAction, layout);
 
         if (!imagePath.isEmpty()) {
             openDirectoryBacked(imagePath);
@@ -393,17 +329,16 @@ public:
                QByteArray::number(viewport_->verticalScrollBar()->value()) + ',' +
                QByteArray::number(viewport_->viewport()->width()) + ',' +
                QByteArray::number(viewport_->viewport()->height()) + ',' +
-               QByteArray::number(imageOrigin().x()) + ',' +
-               QByteArray::number(imageOrigin().y());
+               QByteArray::number(imageOrigin().x()) + ',' + QByteArray::number(imageOrigin().y());
     }
 
     QByteArray uiState() const
     {
         return QByteArray(isFullScreen() ? "fullscreen" : "windowed") + '|' +
-               (statusDisplay_->isVisible() ? "status-visible" : "status-hidden") + '|' +
+               (surface_->statusVisible() ? "status-visible" : "status-hidden") + '|' +
                (viewport_->viewport()->cursor().shape() == Qt::BlankCursor ? "pointer-hidden"
                                                                            : "pointer-visible") +
-               '|' + statusDisplay_->text().toUtf8();
+               '|' + surface_->statusText().toUtf8();
     }
 
     QByteArray informationState() const
@@ -411,22 +346,56 @@ public:
         return informationText_.toUtf8();
     }
 
+    QByteArray informationDialogState() const
+    {
+        return informationDialog_ == nullptr
+                   ? QByteArrayLiteral("closed")
+                   : QByteArrayLiteral("open|") + QByteArray::number(informationDialog_->width()) +
+                         'x' + QByteArray::number(informationDialog_->height());
+    }
+
+    void focusViewingSurfaceForTest()
+    {
+        activateWindow();
+        setFocus(Qt::OtherFocusReason);
+    }
+
     QByteArray feedbackState() const
     {
-        return boundaryMessage_->text().toUtf8();
+        return surface_->statusText().toUtf8();
     }
 
     QByteArray errorState() const
     {
-        return QByteArray(errorState_->isVisible() ? "visible" : "hidden") + '|' +
-               errorExplanation_->text().toUtf8() + '|' + errorDetails_->text().toUtf8() + '|' +
-               (errorDetails_->isVisible() ? "details-visible" : "details-hidden");
+        return surface_->errorDescription();
     }
+
+    QByteArray primaryActionState() const
+    {
+        return surface_->primaryActionDescription();
+    }
+
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    QByteArray presentationMotionContract() const
+    {
+        return surface_->motionContractDescription();
+    }
+
+    QByteArray activePresentationTransition() const
+    {
+        return surface_->activeTransitionDescription();
+    }
+
+    QByteArray backgroundPickerTitle() const
+    {
+        return viewingSurfaceBackgroundPickerTitle().toUtf8();
+    }
+#endif
 
     QByteArray largeImageState() const
     {
-        return QByteArray(largeImageWarning_->isVisible() ? "visible" : "hidden") + '|' +
-               QByteArray::number(pendingLargeImageSize_.width()) + 'x' +
+        return QByteArray(surface_->isLargeImageConfirmationVisible() ? "visible" : "hidden") +
+               '|' + QByteArray::number(pendingLargeImageSize_.width()) + 'x' +
                QByteArray::number(pendingLargeImageSize_.height());
     }
 
@@ -444,22 +413,148 @@ public:
         return descriptions.join(QLatin1Char('|')).toUtf8();
     }
 
+    QByteArray contextMenuStructure() const
+    {
+        return menuStructure(contextMenu_).toUtf8();
+    }
+
+    QByteArray contextMenuGeometry() const
+    {
+        const auto encode = [](const QRect &rect) {
+            return QByteArray::number(rect.x()) + ',' + QByteArray::number(rect.y()) + ',' +
+                   QByteArray::number(rect.width()) + ',' + QByteArray::number(rect.height());
+        };
+        QScreen *screen = contextMenu_->screen();
+        return encode(contextMenu_->frameGeometry()) + '|' +
+               encode(screen != nullptr ? screen->availableGeometry() : QRect{});
+    }
+
+    QByteArray applicationMenuStructure() const
+    {
+        return menuStructure(applicationMenuBar_).toUtf8();
+    }
+
+    QByteArray commandAvailability() const
+    {
+        QStringList entries;
+        for (const QAction *action : contextMenu_->actions()) {
+            if (!action->isSeparator()) {
+                entries.append(
+                    action->text() + QLatin1Char('=') +
+                    (action->isEnabled() ? QStringLiteral("enabled") : QStringLiteral("disabled")));
+            }
+        }
+        return entries.join(QLatin1Char('|')).toUtf8();
+    }
+
+    QByteArray quitActionState() const
+    {
+        QAction *quitAction = commandAction("applicationQuitAction");
+        bool fileMenuContainsAction = false;
+        for (const QAction *menuAction : applicationMenuBar_->actions()) {
+            if (menuAction->text() == tr("File") && menuAction->menu() != nullptr) {
+                fileMenuContainsAction = menuAction->menu()->actions().contains(quitAction);
+                break;
+            }
+        }
+        const bool shared = contextMenu_->actions().contains(quitAction) && fileMenuContainsAction;
+        return QByteArray(shared ? "shared" : "duplicated") + '|' +
+               (quitAction->menuRole() == QAction::QuitRole ? "standard-role" : "custom-role") +
+               '|' + (quitAction->shortcut() == QKeySequence::Quit ? "standard-shortcut"
+                                                                   : "custom-shortcut");
+    }
+
+    QByteArray focusState() const
+    {
+        if (QApplication::activePopupWidget() != nullptr) {
+            return QByteArrayLiteral("menu");
+        }
+        if (QApplication::activeModalWidget() != nullptr ||
+            qobject_cast<QDialog *>(QApplication::activeWindow()) != nullptr) {
+            return QByteArrayLiteral("dialog");
+        }
+        QWidget *focused = QApplication::focusWidget();
+        return (focused == this || (focused != nullptr && isAncestorOf(focused)))
+                   ? QByteArrayLiteral("viewing-surface")
+                   : QByteArrayLiteral("other");
+    }
+
     QByteArray settingsState() const
     {
-        return QByteArray(wheelAction_ == WheelAction::Zoom ? "zoom" : "navigate") + '|' +
-               viewportBackground_.name().toUtf8() + '|' +
-               (statusVisible_ ? "visible" : "hidden") + '|' +
-               QByteArray::number(imageLoader_.cacheBudget()) + '|' +
-               (restoreWindowGeometry_ ? "restore" : "forget");
+        return settingsStateBytes(currentSettings());
+    }
+
+    QByteArray storedSettingsState() const
+    {
+        return settingsStateBytes(readStoredSettings());
+    }
+
+    QByteArray settingsFileName() const
+    {
+        return QSettings().fileName().toUtf8();
+    }
+
+    QByteArray settingsDialogStructure() const
+    {
+        if (settingsDialog_ == nullptr) {
+            return QByteArrayLiteral("closed");
+        }
+        const QList<QGroupBox *> groups = settingsDialog_->findChildren<QGroupBox *>();
+        QStringList descriptions;
+        for (const QGroupBox *group : groups) {
+            QStringList controls;
+            for (const QWidget *child :
+                 group->findChildren<QWidget *>(QString{}, Qt::FindDirectChildrenOnly)) {
+                if (!child->accessibleName().isEmpty()) {
+                    controls.append(child->accessibleName());
+                }
+            }
+            descriptions.append(group->title() + QLatin1Char('[') +
+                                controls.join(QLatin1Char('|')) + QLatin1Char(']'));
+        }
+        const QStringList buttonLabels{settingsButtons_->button(QDialogButtonBox::Reset)->text(),
+                                       settingsButtons_->button(QDialogButtonBox::Cancel)->text(),
+                                       settingsButtons_->button(QDialogButtonBox::Apply)->text()};
+        return (descriptions + buttonLabels).join(QLatin1Char('|')).toUtf8();
+    }
+
+    QByteArray settingsDialogGeometry() const
+    {
+        return settingsDialog_ == nullptr ? QByteArrayLiteral("0x0")
+                                          : QByteArray::number(settingsDialog_->width()) + 'x' +
+                                                QByteArray::number(settingsDialog_->height());
+    }
+
+    QByteArray settingsDialogFocusOrder() const
+    {
+        if (settingsDialog_ == nullptr || settingsWheel_ == nullptr) {
+            return {};
+        }
+        QStringList names;
+        const QWidget *widget = settingsWheel_;
+        do {
+            if (widget->focusPolicy() != Qt::NoFocus) {
+                QString name = widget->accessibleName();
+                if (name.isEmpty()) {
+                    if (const auto *button = qobject_cast<const QAbstractButton *>(widget)) {
+                        name = button->text();
+                    }
+                }
+                if (!name.isEmpty()) {
+                    names.append(name);
+                }
+            }
+            widget = widget->nextInFocusChain();
+        } while (widget != settingsWheel_ && widget != nullptr);
+        return names.join(QLatin1Char('|')).toUtf8();
     }
 
     QByteArray accessibilityState() const
     {
-        const QAccessibleInterface *interface =
-            QAccessible::queryAccessibleInterface(imageLabel_);
-        const QString role =
-            interface && interface->role() == QAccessible::Graphic ? QStringLiteral("Graphic")
-                                                                   : QStringLiteral("Unknown");
+        const QAccessibleInterface *interface = QAccessible::queryAccessibleInterface(imageLabel_);
+        const QString role = interface && interface->role() == QAccessible::Graphic
+                                 ? QStringLiteral("Graphic")
+                                 : QStringLiteral("Unknown");
         QStringList descriptions{imageLabel_->accessibleName() +
                                  QStringLiteral("|AccessibleRole=") + role + QLatin1Char('|') +
                                  imageLabel_->accessibleDescription()};
@@ -479,15 +574,42 @@ public:
         return QByteArray::number(width()) + 'x' + QByteArray::number(height());
     }
 
+    QByteArray presentationState() const
+    {
+        return surface_->presentationDescription();
+    }
+
     void applyTestSettings(const QStringList &values)
     {
-        if (values.size() != 5) {
+        if (const auto settings = parseTestSettings(values)) {
+            applySettings(settings->wheelAction, settings->background, settings->statusVisible,
+                          settings->cacheBudgetBytes, settings->restoreWindowGeometry);
+        }
+    }
+
+    void previewTestSettings(const QStringList &values)
+    {
+        const auto settings = parseTestSettings(values);
+        if (settingsDialog_ == nullptr || !settings) {
             return;
         }
-        applySettings(values.at(0) == QStringLiteral("zoom") ? WheelAction::Zoom
-                                                              : WheelAction::Navigate,
-                      QColor(values.at(1)), values.at(2).toInt() != 0,
-                      values.at(3).toLongLong() * 1024 * 1024, values.at(4).toInt() != 0);
+        setSettingsControls(*settings);
+    }
+
+    void resetTestSettings()
+    {
+        if (settingsButtons_ != nullptr) {
+            settingsButtons_->button(QDialogButtonBox::Reset)->click();
+        }
+    }
+
+    void finishTestSettings(const bool apply)
+    {
+        if (settingsButtons_ == nullptr) {
+            return;
+        }
+        settingsButtons_->button(apply ? QDialogButtonBox::Apply : QDialogButtonBox::Cancel)
+            ->click();
     }
 
     void failExternalActionsForTest()
@@ -497,21 +619,29 @@ public:
 
 #endif
 
-protected:
+  protected:
     void closeEvent(QCloseEvent *event) override
     {
         persistWindowGeometry();
         QWidget::closeEvent(event);
     }
 
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+    }
+
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == viewport_->viewport() && event->type() == QEvent::Resize) {
-            positionStatusDisplay();
-        }
         if ((watched == viewport_->viewport() || watched == imageLabel_) &&
             event->type() == QEvent::MouseMove) {
             showStatus(true);
+        }
+        if (event->type() == QEvent::ContextMenu) {
+            surface_->markBrowsingTeachingComplete();
+            const auto *contextEvent = static_cast<QContextMenuEvent *>(event);
+            contextMenu_->popup(contextEvent->globalPos());
+            return true;
         }
         if ((watched == viewport_->viewport() || watched == imageLabel_) &&
             event->type() == QEvent::MouseButtonDblClick) {
@@ -520,9 +650,8 @@ protected:
         }
         if (watched == viewport_->viewport() && event->type() == QEvent::Wheel) {
             const auto *wheel = static_cast<QWheelEvent *>(event);
-            const int wheelDelta = wheel->angleDelta().y() != 0
-                                       ? wheel->angleDelta().y()
-                                       : wheel->pixelDelta().y() * 8;
+            const int wheelDelta = wheel->angleDelta().y() != 0 ? wheel->angleDelta().y()
+                                                                : wheel->pixelDelta().y() * 8;
             const bool alternate = wheel->modifiers().testFlag(Qt::ControlModifier);
             const bool zoom = (wheelAction_ == WheelAction::Zoom) != alternate;
             if (zoom) {
@@ -566,12 +695,31 @@ protected:
 
     void keyPressEvent(QKeyEvent *event) override
     {
+        if (event->key() == Qt::Key_Escape && informationDialog_ != nullptr) {
+            informationDialog_->close();
+            return;
+        }
         if (event->key() == Qt::Key_F11) {
             toggleFullscreen();
             return;
         }
         if (event->key() == Qt::Key_F5) {
             retryCurrentImage();
+            return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            if (auto *focusedAction =
+                    qobject_cast<QAbstractButton *>(QApplication::focusWidget())) {
+                focusedAction->click();
+                return;
+            }
+            if (surface_->activatePrimaryAction()) {
+                return;
+            }
+        }
+        if (event->key() == Qt::Key_Escape &&
+            surface_->state() == ViewingSurface::State::LargeImageConfirmation) {
+            rejectLargeImage();
             return;
         }
         if (event->key() == Qt::Key_Escape && isFullScreen()) {
@@ -641,9 +789,26 @@ protected:
 
     void dragEnterEvent(QDragEnterEvent *event) override
     {
-        if (event->mimeData()->hasUrls()) {
-            event->acceptProposedAction();
+        int supportedCount = 0;
+        for (const QUrl &url : event->mimeData()->urls()) {
+            if (url.isLocalFile() && BrowsingSequence::supports(url.toLocalFile())) {
+                ++supportedCount;
+            }
         }
+        if (supportedCount == 0) {
+            if (event->mimeData()->hasUrls()) {
+                event->acceptProposedAction();
+            }
+            return;
+        }
+        surface_->showDropTarget(supportedCount);
+        event->acceptProposedAction();
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        surface_->hideDropTarget();
+        event->accept();
     }
 
     void dropEvent(QDropEvent *event) override
@@ -654,68 +819,155 @@ protected:
                 paths.append(url.toLocalFile());
             }
         }
+        surface_->hideDropTarget();
         openDroppedPaths(paths);
         event->acceptProposedAction();
     }
 
-private:
-#if defined(Q_OS_MACOS)
-    void addMacApplicationMenu(QAction *settingsAction)
+  private:
+    QString viewingSurfaceBackgroundPickerTitle() const
     {
-        applicationMenuBar_ = new QMenuBar(this);
-        applicationMenuBar_->setNativeMenuBar(true);
-        QMenu *fileMenu = applicationMenuBar_->addMenu(tr("File"));
-        auto *openAction = fileMenu->addAction(tr("Open…"));
-        openAction->setShortcut(QKeySequence::Open);
-        QObject::connect(openAction, &QAction::triggered, this, [this] {
-            openFromFilePicker();
-        });
-        fileMenu->addAction(settingsAction);
-        settingsAction->setMenuRole(QAction::PreferencesRole);
+        return tr("Viewing Surface Background");
+    }
 
-        QMenu *applicationMenu = applicationMenuBar_->addMenu(tr("Flick"));
-        auto *aboutAction = applicationMenu->addAction(tr("About Flick"));
+    struct SettingsValues
+    {
+        WheelAction wheelAction = WheelAction::Navigate;
+        QColor background{QStringLiteral("#181A1B")};
+        bool statusVisible = true;
+        qsizetype cacheBudgetBytes = DefaultCacheBudgetBytes;
+        bool restoreWindowGeometry = false;
+    };
+
+    template <typename MenuContainer> static QString menuStructure(const MenuContainer *container)
+    {
+        if (container == nullptr) {
+            return {};
+        }
+        QStringList entries;
+        for (const QAction *action : container->actions()) {
+            if (action->isSeparator()) {
+                entries.append(QStringLiteral("---"));
+            } else if (action->menu() != nullptr) {
+                entries.append(action->text() + QLatin1Char('[') + menuStructure(action->menu()) +
+                               QLatin1Char(']'));
+            } else {
+                entries.append(action->text());
+            }
+        }
+        return entries.join(QLatin1Char('|'));
+    }
+
+    QAction *commandAction(const char *objectName) const
+    {
+        QAction *action = findChild<QAction *>(QString::fromLatin1(objectName));
+        Q_ASSERT(action != nullptr);
+        return action;
+    }
+
+    void restoreViewingFocus()
+    {
+        activateWindow();
+        setFocus(Qt::OtherFocusReason);
+    }
+
+    void addCommandSurfaces(QAction *settingsAction, QVBoxLayout *windowLayout)
+    {
+        auto *quitAction = new QAction(tr("Quit Flick"), this);
+        quitAction->setObjectName(QStringLiteral("applicationQuitAction"));
+        quitAction->setMenuRole(QAction::QuitRole);
+        quitAction->setShortcut(QKeySequence::Quit);
+        QObject::connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+
+        const QList<QAction *> viewCommands{
+            commandAction("viewerFitAction"), commandAction("viewerActualSizeAction"),
+            commandAction("viewerZoomInAction"), commandAction("viewerZoomOutAction"),
+            commandAction("viewerFullscreenAction")};
+        const QList<QAction *> imageCommands{
+            commandAction("viewerRotateLeftAction"), commandAction("viewerRotateRightAction"),
+            commandAction("viewerAnimationAction"), commandAction("imageInformationAction")};
+        const QList<QAction *> copyAndRevealCommands{commandAction("imageCopyAction"),
+                                                     commandAction("imageCopyPathAction"),
+                                                     commandAction("imageRevealAction")};
+        contextMenu_ = new QMenu(this);
+        contextMenu_->addAction(commandAction("viewerOpenAction"));
+        contextMenu_->addSeparator();
+        for (QAction *action : viewCommands) {
+            contextMenu_->addAction(action);
+        }
+        contextMenu_->addSeparator();
+        for (QAction *action : imageCommands) {
+            contextMenu_->addAction(action);
+        }
+        contextMenu_->addSeparator();
+        for (QAction *action : copyAndRevealCommands) {
+            contextMenu_->addAction(action);
+        }
+        contextMenu_->addSeparator();
+        contextMenu_->addAction(settingsAction);
+        contextMenu_->addSeparator();
+        contextMenu_->addAction(quitAction);
+        QObject::connect(contextMenu_, &QMenu::aboutToHide, this, [this] {
+            QTimer::singleShot(0, this, [this] { restoreViewingFocus(); });
+        });
+
+        applicationMenuBar_ = new QMenuBar;
+#if defined(Q_OS_MACOS)
+        applicationMenuBar_->setNativeMenuBar(true);
+#else
+        applicationMenuBar_->setNativeMenuBar(false);
+#endif
+        windowLayout->setMenuBar(applicationMenuBar_);
+        QMenu *fileMenu = applicationMenuBar_->addMenu(tr("File"));
+        fileMenu->addAction(commandAction("viewerOpenAction"));
+        fileMenu->addAction(settingsAction);
+        fileMenu->addAction(quitAction);
+#if defined(Q_OS_MACOS)
+        settingsAction->setMenuRole(QAction::PreferencesRole);
+#endif
+        QMenu *viewMenu = applicationMenuBar_->addMenu(tr("View"));
+        for (QAction *action : viewCommands) {
+            viewMenu->addAction(action);
+        }
+        QMenu *imageMenu = applicationMenuBar_->addMenu(tr("Image"));
+        for (QAction *action : imageCommands) {
+            imageMenu->addAction(action);
+        }
+        QMenu *helpMenu = applicationMenuBar_->addMenu(tr("Help"));
+        auto *aboutAction = helpMenu->addAction(tr("About Flick"));
         aboutAction->setMenuRole(QAction::AboutRole);
         QObject::connect(aboutAction, &QAction::triggered, this, [this] {
             QMessageBox::about(this, tr("About Flick"),
                                tr("Flick %1\nA color-managed image viewer.")
                                    .arg(QCoreApplication::applicationVersion()));
+            setFocus();
         });
-        auto *quitAction = applicationMenu->addAction(tr("Quit Flick"));
-        quitAction->setMenuRole(QAction::QuitRole);
-        quitAction->setShortcut(QKeySequence::Quit);
-        QObject::connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
     }
-#endif
 
     void loadSettings()
     {
-        QSettings settings;
-        viewportBackground_ =
-            QColor(settings.value(QStringLiteral("view/background"), QStringLiteral("#202020"))
-                       .toString());
-        if (!viewportBackground_.isValid()) {
-            viewportBackground_ = QColor(QStringLiteral("#202020"));
-        }
-        statusVisible_ = settings.value(QStringLiteral("view/statusVisible"), true).toBool();
-        qsizetype cacheBudgetBytes =
-            settings.value(QStringLiteral("cache/budgetBytes"), DefaultCacheBudgetBytes)
-                .toLongLong();
+        SettingsValues values = readStoredSettings();
 #ifdef FLICK_ENABLE_TEST_HARNESS
         const qint64 testBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
         if (testBudget > 0) {
-            cacheBudgetBytes = testBudget;
+            values.cacheBudgetBytes = testBudget;
         }
 #endif
-        if (cacheBudgetBytes <= 0) {
-            cacheBudgetBytes = DefaultCacheBudgetBytes;
+        if (values.cacheBudgetBytes <= 0) {
+            values.cacheBudgetBytes = DefaultCacheBudgetBytes;
         }
-        imageLoader_.setCacheBudget(cacheBudgetBytes);
-        restoreWindowGeometry_ =
-            settings.value(QStringLiteral("window/restoreGeometry"), false).toBool();
+        wheelAction_ = values.wheelAction;
+        viewportBackground_ = values.background;
+        surface_->setStatusVisible(values.statusVisible);
+        imageLoader_.setCacheBudget(values.cacheBudgetBytes);
+        restoreWindowGeometry_ = values.restoreWindowGeometry;
+        findChild<QAction *>(QStringLiteral("wheelNavigateAction"))
+            ->setChecked(wheelAction_ == WheelAction::Navigate);
+        findChild<QAction *>(QStringLiteral("wheelZoomAction"))
+            ->setChecked(wheelAction_ == WheelAction::Zoom);
         applyViewportBackground();
         if (restoreWindowGeometry_) {
-            restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray());
+            restoreGeometry(QSettings().value(QStringLiteral("window/geometry")).toByteArray());
         }
     }
 
@@ -733,27 +985,81 @@ private:
                        const bool statusVisible, const qsizetype cacheBudgetBytes,
                        const bool restoreWindowGeometry)
     {
-        setWheelAction(wheelAction);
-        viewportBackground_ = background.isValid() ? background : QColor(QStringLiteral("#202020"));
-        statusVisible_ = statusVisible;
-        imageLoader_.setCacheBudget(std::max<qsizetype>(1024 * 1024, cacheBudgetBytes));
-        restoreWindowGeometry_ = restoreWindowGeometry;
-        if (!statusVisible_) {
-            statusTimer_->stop();
-            statusDisplay_->hide();
-        } else {
+        previewSettings(
+            {wheelAction, background, statusVisible, cacheBudgetBytes, restoreWindowGeometry});
+        persistSettings(currentSettings());
+    }
+
+    SettingsValues currentSettings() const
+    {
+        return {wheelAction_, viewportBackground_, surface_->statusEnabled(), imageLoader_.cacheBudget(),
+                restoreWindowGeometry_};
+    }
+
+    static SettingsValues defaultSettings()
+    {
+        return {};
+    }
+
+    static SettingsValues readStoredSettings()
+    {
+        QSettings settings;
+        SettingsValues values;
+        values.wheelAction =
+            settings.value(QStringLiteral("view/wheelAction"), QStringLiteral("navigate"))
+                        .toString() == QStringLiteral("zoom")
+                ? WheelAction::Zoom
+                : WheelAction::Navigate;
+        values.background = QColor(
+            settings.value(QStringLiteral("view/background"), values.background.name()).toString());
+        if (!values.background.isValid()) {
+            values.background = defaultSettings().background;
+        }
+        values.statusVisible =
+            settings.value(QStringLiteral("view/statusVisible"), values.statusVisible).toBool();
+        values.cacheBudgetBytes =
+            settings.value(QStringLiteral("cache/budgetBytes"), values.cacheBudgetBytes)
+                .toLongLong();
+        values.restoreWindowGeometry =
+            settings.value(QStringLiteral("window/restoreGeometry"), values.restoreWindowGeometry)
+                .toBool();
+        return values;
+    }
+
+    static QByteArray settingsStateBytes(const SettingsValues &values)
+    {
+        return QByteArray(values.wheelAction == WheelAction::Zoom ? "zoom" : "navigate") + '|' +
+               values.background.name().toUtf8() + '|' +
+               (values.statusVisible ? "visible" : "hidden") + '|' +
+               QByteArray::number(values.cacheBudgetBytes) + '|' +
+               (values.restoreWindowGeometry ? "restore" : "forget");
+    }
+
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    static std::optional<SettingsValues> parseTestSettings(const QStringList &fields)
+    {
+        if (fields.size() != 5) {
+            return std::nullopt;
+        }
+        return SettingsValues{fields.at(0) == QStringLiteral("zoom") ? WheelAction::Zoom
+                                                                     : WheelAction::Navigate,
+                              QColor(fields.at(1)), fields.at(2).toInt() != 0,
+                              fields.at(3).toLongLong() * 1024 * 1024, fields.at(4).toInt() != 0};
+    }
+#endif
+
+    void previewSettings(const SettingsValues &values)
+    {
+        setWheelAction(values.wheelAction, false);
+        viewportBackground_ =
+            values.background.isValid() ? values.background : defaultSettings().background;
+        surface_->setStatusVisible(values.statusVisible);
+        imageLoader_.setCacheBudget(std::max<qsizetype>(1024 * 1024, values.cacheBudgetBytes));
+        restoreWindowGeometry_ = values.restoreWindowGeometry;
+        if (values.statusVisible) {
             showStatus(false);
         }
         applyViewportBackground();
-        QSettings settings;
-        settings.setValue(QStringLiteral("view/background"), viewportBackground_.name());
-        settings.setValue(QStringLiteral("view/statusVisible"), statusVisible_);
-        settings.setValue(QStringLiteral("cache/budgetBytes"), imageLoader_.cacheBudget());
-        settings.setValue(QStringLiteral("window/restoreGeometry"), restoreWindowGeometry_);
-        if (!restoreWindowGeometry_) {
-            settings.remove(QStringLiteral("window/geometry"));
-        }
-        settings.sync();
         if (auto *navigate = findChild<QAction *>(QStringLiteral("wheelNavigateAction"))) {
             navigate->setChecked(wheelAction_ == WheelAction::Navigate);
         }
@@ -762,57 +1068,147 @@ private:
         }
     }
 
+    void persistSettings(const SettingsValues &values)
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("view/wheelAction"),
+                          values.wheelAction == WheelAction::Zoom ? QStringLiteral("zoom")
+                                                                  : QStringLiteral("navigate"));
+        settings.setValue(QStringLiteral("view/background"), values.background.name());
+        settings.setValue(QStringLiteral("view/statusVisible"), values.statusVisible);
+        settings.setValue(QStringLiteral("cache/budgetBytes"), values.cacheBudgetBytes);
+        settings.setValue(QStringLiteral("window/restoreGeometry"), values.restoreWindowGeometry);
+        if (!values.restoreWindowGeometry) {
+            settings.remove(QStringLiteral("window/geometry"));
+        }
+        settings.sync();
+    }
+
     void showSettings()
     {
-        QDialog dialog(this);
-        dialog.setWindowTitle(tr("Settings"));
-        QFormLayout layout(&dialog);
-        QComboBox wheel;
-        wheel.addItem(tr("Navigate images"), QStringLiteral("navigate"));
-        wheel.addItem(tr("Zoom image"), QStringLiteral("zoom"));
-        wheel.setCurrentIndex(wheelAction_ == WheelAction::Zoom ? 1 : 0);
-        QPushButton background(viewportBackground_.name());
-        QColor selectedBackground = viewportBackground_;
-        QObject::connect(&background, &QPushButton::clicked, &dialog, [&] {
-            const QColor selected = QColorDialog::getColor(selectedBackground, &dialog,
-                                                            tr("Viewport Background"));
+        if (settingsDialog_ != nullptr) {
+            settingsDialog_->raise();
+            settingsDialog_->activateWindow();
+            return;
+        }
+        settingsOpeningValues_ = currentSettings();
+        settingsDialog_ = new QDialog(this);
+        settingsDialog_->setAttribute(Qt::WA_DeleteOnClose);
+        settingsDialog_->setWindowTitle(tr("Settings"));
+        settingsDialog_->setWindowModality(Qt::WindowModal);
+        settingsDialog_->setMinimumWidth(380);
+        auto *layout = new QVBoxLayout(settingsDialog_);
+        layout->setContentsMargins(12, 8, 12, 8);
+        layout->setSpacing(4);
+
+        auto *navigation = new QGroupBox(tr("Navigation"), settingsDialog_);
+        auto *navigationLayout = new QFormLayout(navigation);
+        navigationLayout->setContentsMargins(8, 12, 8, 6);
+        navigationLayout->setVerticalSpacing(4);
+        settingsWheel_ = new QComboBox(navigation);
+        settingsWheel_->setAccessibleName(tr("Mouse wheel action"));
+        settingsWheel_->addItem(tr("Navigate images"), QStringLiteral("navigate"));
+        settingsWheel_->addItem(tr("Zoom image"), QStringLiteral("zoom"));
+        navigationLayout->addRow(tr("Mouse wheel:"), settingsWheel_);
+        layout->addWidget(navigation);
+
+        auto *appearance = new QGroupBox(tr("Appearance"), settingsDialog_);
+        auto *appearanceLayout = new QFormLayout(appearance);
+        appearanceLayout->setContentsMargins(8, 12, 8, 6);
+        appearanceLayout->setVerticalSpacing(4);
+        settingsBackground_ = new QPushButton(appearance);
+        settingsBackground_->setAccessibleName(tr("Viewing surface background"));
+        settingsStatus_ = new QCheckBox(tr("Show status overlay"), appearance);
+        settingsStatus_->setAccessibleName(tr("Show status overlay"));
+        appearanceLayout->addRow(tr("Viewing surface background:"), settingsBackground_);
+        appearanceLayout->addRow(QString{}, settingsStatus_);
+        layout->addWidget(appearance);
+
+        auto *performance = new QGroupBox(tr("Performance & Window"), settingsDialog_);
+        auto *performanceLayout = new QFormLayout(performance);
+        performanceLayout->setContentsMargins(8, 12, 8, 6);
+        performanceLayout->setVerticalSpacing(4);
+        settingsCache_ = new QSpinBox(performance);
+        settingsCache_->setAccessibleName(tr("Decoded cache budget"));
+        settingsCache_->setRange(1, 16384);
+        settingsCache_->setSuffix(tr(" MB"));
+        settingsGeometry_ = new QCheckBox(tr("Restore window size and position"), performance);
+        settingsGeometry_->setAccessibleName(tr("Restore window size and position"));
+        performanceLayout->addRow(tr("Decoded cache budget:"), settingsCache_);
+        performanceLayout->addRow(QString{}, settingsGeometry_);
+        layout->addWidget(performance);
+
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Reset | QDialogButtonBox::Cancel |
+                                                 QDialogButtonBox::Apply,
+                                             settingsDialog_);
+        settingsButtons_ = buttons;
+        buttons->button(QDialogButtonBox::Reset)->setText(tr("Reset Defaults"));
+        layout->addWidget(buttons);
+
+        const auto previewControls = [this] { previewSettings(settingsControlsValues()); };
+        QObject::connect(settingsWheel_, &QComboBox::currentIndexChanged, settingsDialog_,
+                         previewControls);
+        QObject::connect(settingsStatus_, &QCheckBox::toggled, settingsDialog_, previewControls);
+        QObject::connect(settingsCache_, &QSpinBox::valueChanged, settingsDialog_, previewControls);
+        QObject::connect(settingsGeometry_, &QCheckBox::toggled, settingsDialog_, previewControls);
+        QObject::connect(settingsBackground_, &QPushButton::clicked, settingsDialog_, [this] {
+            const QColor selected = QColorDialog::getColor(
+                settingsDialogBackground_, settingsDialog_, viewingSurfaceBackgroundPickerTitle());
             if (selected.isValid()) {
-                selectedBackground = selected;
-                background.setText(selected.name());
+                settingsDialogBackground_ = selected;
+                settingsBackground_->setText(selected.name());
+                previewSettings(settingsControlsValues());
             }
         });
-        QCheckBox status(tr("Show transient image status"));
-        status.setChecked(statusVisible_);
-        QSpinBox cache;
-        cache.setRange(1, 16384);
-        cache.setSuffix(tr(" MB"));
-        cache.setValue(static_cast<int>(imageLoader_.cacheBudget() / (1024 * 1024)));
-        QCheckBox geometry(tr("Restore window size and position"));
-        geometry.setChecked(restoreWindowGeometry_);
-        layout.addRow(tr("Mouse wheel:"), &wheel);
-        layout.addRow(tr("Background:"), &background);
-        layout.addRow(QString{}, &status);
-        layout.addRow(tr("Cache budget:"), &cache);
-        layout.addRow(QString{}, &geometry);
-        QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        QObject::connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-        QObject::connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        layout.addRow(&buttons);
-        if (dialog.exec() == QDialog::Accepted) {
-            applySettings(wheel.currentData() == QStringLiteral("zoom") ? WheelAction::Zoom
-                                                                         : WheelAction::Navigate,
-                          selectedBackground, status.isChecked(),
-                          static_cast<qsizetype>(cache.value()) * 1024 * 1024,
-                          geometry.isChecked());
-        }
+        QObject::connect(buttons->button(QDialogButtonBox::Reset), &QPushButton::clicked,
+                         settingsDialog_, [this] { setSettingsControls(defaultSettings()); });
+        QObject::connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked,
+                         settingsDialog_, [this] {
+                             persistSettings(currentSettings());
+                             settingsDialog_->accept();
+                         });
+        QObject::connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
+        QObject::connect(settingsDialog_, &QDialog::rejected, this,
+                         [this] { previewSettings(settingsOpeningValues_); });
+        QObject::connect(settingsDialog_, &QDialog::finished, this, [this] {
+            settingsDialog_ = nullptr;
+            settingsWheel_ = nullptr;
+            settingsBackground_ = nullptr;
+            settingsStatus_ = nullptr;
+            settingsCache_ = nullptr;
+            settingsGeometry_ = nullptr;
+            settingsButtons_ = nullptr;
+            restoreViewingFocus();
+        });
+        setSettingsControls(settingsOpeningValues_);
+        settingsDialog_->open();
+    }
+
+    SettingsValues settingsControlsValues() const
+    {
+        return {settingsWheel_->currentData() == QStringLiteral("zoom") ? WheelAction::Zoom
+                                                                        : WheelAction::Navigate,
+                settingsDialogBackground_, settingsStatus_->isChecked(),
+                static_cast<qsizetype>(settingsCache_->value()) * 1024 * 1024,
+                settingsGeometry_->isChecked()};
+    }
+
+    void setSettingsControls(const SettingsValues &values)
+    {
+        settingsDialogBackground_ = values.background;
+        settingsWheel_->setCurrentIndex(values.wheelAction == WheelAction::Zoom ? 1 : 0);
+        settingsBackground_->setText(values.background.name());
+        settingsStatus_->setChecked(values.statusVisible);
+        settingsCache_->setValue(static_cast<int>(values.cacheBudgetBytes / (1024 * 1024)));
+        settingsGeometry_->setChecked(values.restoreWindowGeometry);
+        previewSettings(values);
     }
 
     void addImageActions()
     {
         const auto addImageAction = [this](const QString &text, const QString &objectName,
                                            const QKeySequence &shortcut, auto operation) {
-            QAction *action =
-                addViewportAction(text, objectName, shortcut, std::move(operation));
+            QAction *action = addViewportAction(text, objectName, shortcut, std::move(operation));
             action->setEnabled(false);
             imageActions_.append(action);
         };
@@ -830,8 +1226,8 @@ private:
 
     void addViewerActions()
     {
-        addViewportAction(tr("Open Image"), QStringLiteral("viewerOpenAction"),
-                          QKeySequence::Open, [this] { openFromFilePicker(); });
+        addViewportAction(tr("Open Image"), QStringLiteral("viewerOpenAction"), QKeySequence::Open,
+                          [this] { openFromFilePicker(); });
         addViewportAction(tr("Previous Image"), QStringLiteral("viewerPreviousAction"),
                           QKeySequence(Qt::Key_Left), [this] { navigate(-1); });
         addViewportAction(tr("Next Image"), QStringLiteral("viewerNextAction"),
@@ -848,21 +1244,27 @@ private:
         addViewportAction(tr("Pan Down"), QStringLiteral("viewerPanDownAction"),
                           QKeySequence(Qt::SHIFT | Qt::Key_Down),
                           [this] { panBy(0, KeyboardPanStep); });
-        addViewportAction(tr("Zoom In"), QStringLiteral("viewerZoomInAction"),
-                          QKeySequence::ZoomIn, [this] { setZoomCentered(zoom_ * 1.25); });
-        addViewportAction(tr("Zoom Out"), QStringLiteral("viewerZoomOutAction"),
-                          QKeySequence::ZoomOut, [this] { setZoomCentered(zoom_ / 1.25); });
-        addViewportAction(tr("Actual Size"), QStringLiteral("viewerActualSizeAction"),
-                          QKeySequence(Qt::Key_1), [this] { setZoomCentered(1.0); });
-        addViewportAction(tr("Fit to Window"), QStringLiteral("viewerFitAction"),
-                          QKeySequence(Qt::Key_F), [this] { fitToViewport(); });
-        addViewportAction(tr("Rotate Left"), QStringLiteral("viewerRotateLeftAction"),
-                          QKeySequence(Qt::Key_L), [this] { rotateView(-1); });
-        addViewportAction(tr("Rotate Right"), QStringLiteral("viewerRotateRightAction"),
-                          QKeySequence(Qt::Key_R), [this] { rotateView(1); });
-        addViewportAction(tr("Pause or Resume Animation"),
-                          QStringLiteral("viewerAnimationAction"), QKeySequence(Qt::Key_Space),
-                          [this] { toggleAnimation(); });
+        const auto addImageViewerAction = [this](const QString &text, const QString &objectName,
+                                                 const QKeySequence &shortcut, auto operation) {
+            QAction *action = addViewportAction(text, objectName, shortcut, std::move(operation));
+            action->setEnabled(false);
+            imageActions_.append(action);
+        };
+        addImageViewerAction(tr("Zoom In"), QStringLiteral("viewerZoomInAction"),
+                             QKeySequence::ZoomIn, [this] { setZoomCentered(zoom_ * 1.25); });
+        addImageViewerAction(tr("Zoom Out"), QStringLiteral("viewerZoomOutAction"),
+                             QKeySequence::ZoomOut, [this] { setZoomCentered(zoom_ / 1.25); });
+        addImageViewerAction(tr("Actual Size"), QStringLiteral("viewerActualSizeAction"),
+                             QKeySequence(Qt::Key_1), [this] { setZoomCentered(1.0); });
+        addImageViewerAction(tr("Fit to Window"), QStringLiteral("viewerFitAction"),
+                             QKeySequence(Qt::Key_F), [this] { fitToViewport(); });
+        addImageViewerAction(tr("Rotate Left"), QStringLiteral("viewerRotateLeftAction"),
+                             QKeySequence(Qt::Key_L), [this] { rotateView(-1); });
+        addImageViewerAction(tr("Rotate Right"), QStringLiteral("viewerRotateRightAction"),
+                             QKeySequence(Qt::Key_R), [this] { rotateView(1); });
+        addImageViewerAction(tr("Pause or Resume Animation"),
+                             QStringLiteral("viewerAnimationAction"), QKeySequence(Qt::Key_Space),
+                             [this] { toggleAnimation(); });
         addViewportAction(tr("Toggle Fullscreen"), QStringLiteral("viewerFullscreenAction"),
                           QKeySequence(Qt::Key_F11), [this] { toggleFullscreen(); });
         addViewportAction(tr("Retry"), QStringLiteral("viewerRetryAction"),
@@ -870,8 +1272,7 @@ private:
     }
 
     QAction *addViewportAction(const QString &text, const QString &objectName,
-                               const QKeySequence &shortcut,
-                               std::function<void()> operation)
+                               const QKeySequence &shortcut, std::function<void()> operation)
     {
         auto *action = new QAction(text, this);
         action->setObjectName(objectName);
@@ -884,21 +1285,49 @@ private:
 
     QString imageInformation() const
     {
-        const QFileInfo file(currentImage_.path);
+        const QString selectedPath = browsingSequence_.selectedPath();
+        if (selectedPath.isEmpty()) {
+            return tr("No current image");
+        }
+        const QFileInfo file(selectedPath);
         QString format = file.suffix().toUpper();
         if (format == QStringLiteral("JPG")) {
             format = QStringLiteral("JPEG");
         }
-        return tr("Path: %1\nFormat: %2\nDimensions: %3 × %4\nSize: %5 bytes\n"
-                  "Modified: %6\nZoom: %7%\nPosition: %8 / %9")
+        const bool displayed = !image_.isNull() && currentImage_.path == selectedPath;
+        const QString dimensions =
+            displayed ? tr("%1 × %2").arg(image_.width()).arg(image_.height())
+            : surface_->state() == ViewingSurface::State::Error ? tr("Unavailable")
+                                                                : tr("Loading…");
+        const QString animation = !displayed                        ? tr("Unavailable")
+                                  : currentImage_.frames.size() < 2 ? tr("Static image")
+                                  : animationPlayback_ == AnimationPlayback::Paused
+                                      ? tr("Paused")
+                                  : animationPlayback_ == AnimationPlayback::Finished
+                                      ? tr("Finished")
+                                                                    : tr("Playing");
+        return tr("Path: %1\nFormat: %2\nDimensions: %3\nSize: %4 bytes\n"
+                  "Modified: %5\nZoom: %6%\nRotation: %7°\nAnimation: "
+                  "%8\nPosition: %9 / %10")
             .arg(file.absoluteFilePath(), format)
-            .arg(image_.width())
-            .arg(image_.height())
+            .arg(dimensions)
             .arg(file.size())
             .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
             .arg(qRound(zoom_ * 100))
-            .arg(browsingSequence_.paths().indexOf(currentImage_.path) + 1)
+            .arg(rotationQuarterTurns_ * 90)
+            .arg(animation)
+            .arg(browsingSequence_.selectedIndex() + 1)
             .arg(browsingSequence_.paths().size());
+    }
+
+    void updateInformation()
+    {
+        if (informationDialog_ == nullptr) {
+            return;
+        }
+        informationText_ = imageInformation();
+        informationFacts_->setText(informationText_);
+        informationDialog_->adjustSize();
     }
 
     void showInformation()
@@ -906,18 +1335,39 @@ private:
         if (browsingSequence_.selectedIndex() < 0 || image_.isNull()) {
             return;
         }
+        if (informationDialog_ != nullptr) {
+            informationDialog_->raise();
+            informationDialog_->activateWindow();
+            return;
+        }
         informationText_ = imageInformation();
-        auto *dialog = new QDialog(this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setWindowTitle(tr("Image Information"));
-        auto *layout = new QVBoxLayout(dialog);
-        auto *facts = new QLabel(informationText_, dialog);
-        facts->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-        layout->addWidget(facts);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        informationDialog_ = new QDialog(this, Qt::Tool);
+        informationDialog_->setAttribute(Qt::WA_DeleteOnClose);
+        informationDialog_->setModal(false);
+        informationDialog_->setWindowTitle(tr("Image Information"));
+        informationDialog_->setMaximumSize(480, 320);
+        auto *layout = new QVBoxLayout(informationDialog_);
+        informationFacts_ = new QLabel(informationText_, informationDialog_);
+        informationFacts_->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                   Qt::TextSelectableByKeyboard);
+        informationFacts_->setWordWrap(true);
+        informationFacts_->setAccessibleName(tr("Current image information"));
+        auto *factsViewport = new QScrollArea(informationDialog_);
+        factsViewport->setWidgetResizable(true);
+        factsViewport->setFrameShape(QFrame::NoFrame);
+        factsViewport->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        factsViewport->setWidget(informationFacts_);
+        factsViewport->setMinimumSize(360, 180);
+        layout->addWidget(factsViewport);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, informationDialog_);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, informationDialog_, &QDialog::close);
         layout->addWidget(buttons);
-        dialog->show();
+        informationDialog_->show();
+        QObject::connect(informationDialog_, &QDialog::finished, this, [this] {
+            informationDialog_ = nullptr;
+            informationFacts_ = nullptr;
+            QTimer::singleShot(0, this, [this] { restoreViewingFocus(); });
+        });
     }
 
     bool externalActionCanRun(const QString &failureMessage)
@@ -948,6 +1398,8 @@ private:
         clipboard->setText(path);
         if (clipboard->text() != path) {
             showFeedback(tr("Could not copy the current file path"));
+        } else {
+            showFeedback(tr("File path copied"));
         }
     }
 
@@ -965,6 +1417,8 @@ private:
         clipboard->setImage(content);
         if (clipboard->image() != content) {
             showFeedback(tr("Could not copy the current image"));
+        } else {
+            showFeedback(tr("Image copied"));
         }
     }
 
@@ -974,18 +1428,19 @@ private:
             !externalActionCanRun(tr("Could not show the current file in the file manager"))) {
             return;
         }
-        if (!platformServices_->revealFile(
-                QFileInfo(currentImage_.path).absoluteFilePath())) {
+        if (!platformServices_->revealFile(QFileInfo(currentImage_.path).absoluteFilePath())) {
             showFeedback(tr("Could not show the current file in the file manager"));
         }
     }
 
-    void setWheelAction(const WheelAction action)
+    void setWheelAction(const WheelAction action, const bool persist = true)
     {
         wheelAction_ = action;
-        QSettings().setValue(QStringLiteral("view/wheelAction"),
-                             action == WheelAction::Zoom ? QStringLiteral("zoom")
-                                                         : QStringLiteral("navigate"));
+        if (persist) {
+            QSettings().setValue(QStringLiteral("view/wheelAction"),
+                                 action == WheelAction::Zoom ? QStringLiteral("zoom")
+                                                             : QStringLiteral("navigate"));
+        }
     }
 
     void toggleFullscreen()
@@ -994,7 +1449,7 @@ private:
             leaveFullscreen();
         } else {
             showFullScreen();
-            showStatus(true);
+            surface_->enteredFullscreen();
         }
     }
 
@@ -1005,46 +1460,15 @@ private:
         showStatus(false);
     }
 
-    void updateStatusText()
-    {
-        const QString currentPath = browsingSequence_.selectedPath();
-        if (currentPath.isEmpty()) {
-            return;
-        }
-        statusDisplay_->setText(
-            tr("%1 — %2 / %3 — %4%")
-                .arg(QFileInfo(currentPath).fileName())
-                .arg(browsingSequence_.selectedIndex() + 1)
-                .arg(browsingSequence_.paths().size())
-                .arg(qRound(zoom_ * 100)));
-        statusDisplay_->adjustSize();
-        positionStatusDisplay();
-    }
-
-    void positionStatusDisplay()
-    {
-        if (statusDisplay_ == nullptr || viewport_ == nullptr) {
-            return;
-        }
-        constexpr int BottomMargin = 12;
-        const QSize viewportSize = viewport_->viewport()->size();
-        statusDisplay_->move((viewportSize.width() - statusDisplay_->width()) / 2,
-                             viewportSize.height() - statusDisplay_->height() - BottomMargin);
-        statusDisplay_->raise();
-    }
-
     void showStatus(const bool revealPointer)
     {
-        if (browsingSequence_.selectedIndex() < 0 || !statusVisible_) {
+        if (browsingSequence_.selectedIndex() < 0) {
             return;
         }
-        updateStatusText();
-        statusDisplay_->show();
-        statusDisplay_->raise();
         if (revealPointer) {
             viewport_->viewport()->unsetCursor();
         }
-        statusTimer_->start(StatusVisibilityMilliseconds);
+        surface_->showStatus();
     }
 
     void openDirectoryBacked(const QString &path)
@@ -1102,9 +1526,10 @@ private:
             });
         }
 #endif
-        const QString selectedPath = QFileDialog::getOpenFileName(
-            this, tr("Open Image"), initialDirectory,
-            tr("Images (*.jpg *.jpeg *.png *.webp *.gif *.bmp)"));
+        const QString selectedPath =
+            QFileDialog::getOpenFileName(this, tr("Open Image"), initialDirectory,
+                                         tr("Images (*.jpg *.jpeg *.png *.webp *.gif *.bmp)"));
+        restoreViewingFocus();
         if (selectedPath.isEmpty()) {
             return;
         }
@@ -1126,7 +1551,11 @@ private:
         for (QAction *action : imageActions_) {
             action->setEnabled(false);
         }
-        requestDecode(currentPath);
+        currentImage_ = {};
+        image_ = {};
+        imageLabel_->clearImage();
+        surface_->hideStatus();
+        beginCurrentImageLoad(currentPath, false);
     }
 
     void retryCurrentImage()
@@ -1135,9 +1564,8 @@ private:
         if (currentPath.isEmpty()) {
             return;
         }
-        errorState_->hide();
         dismissLargeImageWarning();
-        retryDecode(currentPath);
+        beginCurrentImageLoad(currentPath, true);
     }
 
     void approveLargeImage()
@@ -1145,25 +1573,45 @@ private:
         const QString approvedPath = pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (!approvedPath.isEmpty() && browsingSequence_.selectedPath() == approvedPath) {
-            retryDecode(approvedPath, true);
+            beginCurrentImageLoad(approvedPath, true, true);
+        }
+    }
+
+    void beginCurrentImageLoad(const QString &path, const bool retry,
+                               const bool approvedLargeImage = false)
+    {
+        surface_->beginLoading(QFileInfo(path).fileName());
+        updateInformation();
+        if (retry) {
+            retryDecode(path, approvedLargeImage);
+        } else {
+            requestDecode(path);
         }
     }
 
     void rejectLargeImage()
     {
-        const bool rejectingCurrent =
-            !pendingLargeImagePath_.isEmpty() &&
-            browsingSequence_.selectedPath() == pendingLargeImagePath_;
+        const bool rejectingCurrent = !pendingLargeImagePath_.isEmpty() &&
+                                      browsingSequence_.selectedPath() == pendingLargeImagePath_;
         dismissLargeImageWarning();
         if (rejectingCurrent) {
-            showEmptyState();
-            showFeedback(tr("Large image decode cancelled"));
+            const BrowsingSequence::AdjacentPaths adjacent = browsingSequence_.adjacentPaths();
+            if (!adjacent.next.isEmpty()) {
+                navigate(1);
+            } else if (!adjacent.previous.isEmpty()) {
+                navigate(-1);
+            } else {
+                browsingSequence_ = BrowsingSequence::explicitList({});
+                imageLoader_.setCurrentPath({});
+                showEmptyState();
+            }
+            showFeedback(tr("Large image skipped"));
         }
     }
 
     void dismissLargeImageWarning()
     {
-        largeImageWarning_->hide();
+        surface_->dismissLargeImageConfirmation();
         pendingLargeImagePath_.clear();
     }
 
@@ -1176,7 +1624,7 @@ private:
         currentImage_ = decoded;
         currentFrame_ = 0;
         completedLoops_ = 0;
-        animationPaused_ = false;
+        animationPlayback_ = AnimationPlayback::Playing;
         pausedDelayMilliseconds_ = 0;
         rotationQuarterTurns_ = 0;
         applyInitialZoom();
@@ -1186,10 +1634,7 @@ private:
         if (currentImage_.frames.size() > 1) {
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
-        emptyState_->hide();
-        errorState_->hide();
-        largeImageWarning_->hide();
-        viewport_->show();
+        surface_->showDisplayed();
         if (path == pendingFilePickerPath_) {
             QSettings settings;
             settings.setValue(QStringLiteral("filePicker/lastDirectory"),
@@ -1200,14 +1645,13 @@ private:
         for (QAction *action : imageActions_) {
             action->setEnabled(true);
         }
-        setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
-        boundaryTimer_->stop();
-        boundaryMessage_->hide();
-        if (!pendingFeedback_.isEmpty()) {
-            const QString feedback = pendingFeedback_;
-            pendingFeedback_.clear();
-            showFeedback(feedback);
+        commandAction("viewerAnimationAction")->setEnabled(currentImage_.frames.size() > 1);
+        updateInformation();
+        if (informationDialog_ == nullptr) {
+            restoreViewingFocus();
         }
+        setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
+        surface_->currentImageDisplayed();
     }
 
     void refreshDirectorySequence()
@@ -1215,13 +1659,13 @@ private:
         if (directoryWatcher_->directories().isEmpty()) {
             return;
         }
-        const BrowsingSequence::ReconcileOutcome outcome =
-            browsingSequence_.reconcileDirectory();
+        const BrowsingSequence::ReconcileOutcome outcome = browsingSequence_.reconcileDirectory();
         if (outcome == BrowsingSequence::ReconcileOutcome::Unchanged) {
             return;
         }
         if (outcome == BrowsingSequence::ReconcileOutcome::SelectionPreserved) {
-            updateStatusText();
+            showStatus(false);
+            updateInformation();
             prefetchNeighbors();
             return;
         }
@@ -1237,7 +1681,7 @@ private:
             return;
         }
 
-        pendingFeedback_ = tr("Current image is no longer available");
+        surface_->queueFeedback(tr("Current image is no longer available"));
         displaySelectedImage();
     }
 
@@ -1300,6 +1744,7 @@ private:
         }
         zoom_ = std::clamp(zoom, 0.01, 64.0);
         renderImage();
+        updateInformation();
         showStatus(false);
     }
 
@@ -1325,8 +1770,7 @@ private:
         const QPoint originAfter = imageOrigin();
         horizontal->setValue(
             qRound(originAfter.x() + imagePoint.x() * zoom_ - viewportPosition.x()));
-        vertical->setValue(
-            qRound(originAfter.y() + imagePoint.y() * zoom_ - viewportPosition.y()));
+        vertical->setValue(qRound(originAfter.y() + imagePoint.y() * zoom_ - viewportPosition.y()));
     }
 
     void panBy(const int horizontalDistance, const int verticalDistance)
@@ -1347,7 +1791,9 @@ private:
             rotationQuarterTurns_ += 4;
         }
         renderImage();
+        updateInformation();
         scheduleCenterView();
+        showStatus(false);
     }
 
     void renderImage()
@@ -1386,21 +1832,19 @@ private:
 
     void centerView()
     {
-        viewport_->horizontalScrollBar()->setValue(
-            viewport_->horizontalScrollBar()->maximum() / 2);
+        viewport_->horizontalScrollBar()->setValue(viewport_->horizontalScrollBar()->maximum() / 2);
         viewport_->verticalScrollBar()->setValue(viewport_->verticalScrollBar()->maximum() / 2);
     }
 
     void scheduleCenterView()
     {
-        QTimer::singleShot(0, this, [this] {
-            centerView();
-        });
+        QTimer::singleShot(0, this, [this] { centerView(); });
     }
 
     void advanceAnimation()
     {
-        if (currentImage_.frames.size() < 2 || animationPaused_) {
+        if (currentImage_.frames.size() < 2 ||
+            animationPlayback_ == AnimationPlayback::Paused) {
             return;
         }
         if (currentFrame_ + 1 < currentImage_.frames.size()) {
@@ -1409,6 +1853,8 @@ private:
             currentFrame_ = 0;
             ++completedLoops_;
         } else {
+            animationPlayback_ = AnimationPlayback::Finished;
+            updateInformation();
             return;
         }
         showFrame(currentFrame_);
@@ -1417,17 +1863,19 @@ private:
 
     void toggleAnimation()
     {
-        if (currentImage_.frames.size() < 2) {
+        if (currentImage_.frames.size() < 2 ||
+            animationPlayback_ == AnimationPlayback::Finished) {
             return;
         }
-        if (animationPaused_) {
-            animationPaused_ = false;
+        if (animationPlayback_ == AnimationPlayback::Paused) {
+            animationPlayback_ = AnimationPlayback::Playing;
             animationTimer_->start(std::max(1, pausedDelayMilliseconds_));
         } else {
             pausedDelayMilliseconds_ = std::max(1, animationTimer_->remainingTime());
-            animationPaused_ = true;
+            animationPlayback_ = AnimationPlayback::Paused;
             animationTimer_->stop();
         }
+        updateInformation();
     }
 
     ImageLoading::DecodeRequest decodeRequest(const QString &path,
@@ -1436,9 +1884,8 @@ private:
 #ifdef FLICK_ENABLE_TEST_HARNESS
         const qint64 configuredAllocationLimit =
             qEnvironmentVariableIntValue("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES");
-        const qint64 allocationLimit = configuredAllocationLimit > 0
-                                           ? configuredAllocationLimit
-                                           : LargeImageAllocationLimit;
+        const qint64 allocationLimit =
+            configuredAllocationLimit > 0 ? configuredAllocationLimit : LargeImageAllocationLimit;
 #else
         constexpr qint64 allocationLimit = LargeImageAllocationLimit;
 #endif
@@ -1467,21 +1914,21 @@ private:
     void retryDecode(const QString &path, const bool approvedLargeImage = false)
     {
         if (!path.isEmpty()) {
-            recordScheduledDecode(
-                path, imageLoader_.retry(decodeRequest(path, approvedLargeImage)));
+            recordScheduledDecode(path,
+                                  imageLoader_.retry(decodeRequest(path, approvedLargeImage)));
         }
     }
 
     void prefetchNeighbors()
     {
-        const auto requestFor = [this](const QString &path)
-            -> std::optional<ImageLoading::DecodeRequest> {
+        const auto requestFor =
+            [this](const QString &path) -> std::optional<ImageLoading::DecodeRequest> {
             return path.isEmpty() ? std::nullopt
                                   : std::optional<ImageLoading::DecodeRequest>(decodeRequest(path));
         };
         const BrowsingSequence::AdjacentPaths adjacent = browsingSequence_.adjacentPaths();
-        const QList<QString> scheduled = imageLoader_.prefetchAdjacent(
-            requestFor(adjacent.previous), requestFor(adjacent.next));
+        const QList<QString> scheduled =
+            imageLoader_.prefetchAdjacent(requestFor(adjacent.previous), requestFor(adjacent.next));
         for (const QString &path : scheduled) {
             recordScheduledDecode(path, true);
         }
@@ -1492,44 +1939,31 @@ private:
         const BrowsingSequence::MoveOutcome outcome =
             offset < 0 ? browsingSequence_.movePrevious() : browsingSequence_.moveNext();
         if (outcome != BrowsingSequence::MoveOutcome::Selected) {
-            boundaryMessage_->setText(outcome == BrowsingSequence::MoveOutcome::Beginning
-                                          ? tr("Beginning of folder")
-                                          : tr("End of folder"));
-            boundaryMessage_->show();
-            boundaryTimer_->start(1500);
+            showFeedback(outcome == BrowsingSequence::MoveOutcome::Beginning
+                             ? tr("Beginning of folder")
+                             : tr("End of folder"));
             return;
         }
+        surface_->markBrowsingTeachingComplete();
         displaySelectedImage();
     }
 
     void showFeedback(const QString &message)
     {
-        boundaryMessage_->setText(message);
-        boundaryMessage_->show();
-        boundaryTimer_->start(1500);
+        surface_->showFeedback(message);
     }
 
     void showEmptyState()
     {
-        viewport_->hide();
-        errorState_->hide();
-        largeImageWarning_->hide();
-        emptyState_->show();
+        surface_->showEmpty();
+        updateInformation();
     }
 
     void showDecodeError(const ImageLoading::DecodeFailure &failure)
     {
         animationTimer_->stop();
-        viewport_->hide();
-        emptyState_->hide();
-        errorExplanation_->setText(
-            tr("%1 could not be displayed. You can retry or browse to another image.")
-                .arg(QFileInfo(failure.path).fileName()));
-        errorDetails_->setText(
-            failure.details.isEmpty() ? tr("The image decoder returned no pixels.")
-                                      : failure.details);
-        errorDetailsButton_->setChecked(false);
-        errorState_->show();
+        surface_->showError(QFileInfo(failure.path).fileName(), failure.details);
+        updateInformation();
         setWindowTitle(tr("Flick — Error"));
     }
 
@@ -1537,61 +1971,57 @@ private:
     {
         pendingLargeImageSize_ = confirmation.declaredSize;
         pendingLargeImagePath_ = confirmation.path;
-        viewport_->hide();
-        emptyState_->hide();
-        errorState_->hide();
-        largeImageExplanation_->setText(
-            tr("%1 declares %2 × %3 pixels and may require about %4 MB when decoded. "
+        surface_->showLargeImageConfirmation(
+            tr("%1 declares %2 × %3 pixels and may require about %4 MB when "
+               "decoded. "
                "Decode it anyway?")
                 .arg(QFileInfo(confirmation.path).fileName())
                 .arg(confirmation.declaredSize.width())
                 .arg(confirmation.declaredSize.height())
                 .arg(confirmation.estimatedAllocationBytes / (1024 * 1024)));
-        largeImageWarning_->show();
+        updateInformation();
     }
 
     QImage image_;
     std::unique_ptr<PlatformServices> platformServices_;
     ImageLoading::Loader imageLoader_;
     ImageCanvas *imageLabel_ = nullptr;
+    ViewingSurface *surface_ = nullptr;
     QScrollArea *viewport_ = nullptr;
-    QLabel *boundaryMessage_ = nullptr;
-    QTimer *boundaryTimer_ = nullptr;
     QTimer *animationTimer_ = nullptr;
     QFileSystemWatcher *directoryWatcher_ = nullptr;
-    QLabel *emptyState_ = nullptr;
-    QWidget *errorState_ = nullptr;
-    QLabel *errorExplanation_ = nullptr;
-    QLabel *errorDetails_ = nullptr;
-    QToolButton *errorDetailsButton_ = nullptr;
-    QWidget *largeImageWarning_ = nullptr;
-    QLabel *largeImageExplanation_ = nullptr;
     QSize pendingLargeImageSize_;
     QString pendingLargeImagePath_;
-    QLabel *statusDisplay_ = nullptr;
-    QTimer *statusTimer_ = nullptr;
     BrowsingSequence browsingSequence_ = BrowsingSequence::explicitList({});
     QString pendingFilePickerPath_;
-    QString pendingFeedback_;
     LoadedImage currentImage_;
     int currentFrame_ = 0;
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
-    bool animationPaused_ = false;
+    AnimationPlayback animationPlayback_ = AnimationPlayback::Finished;
     WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;
     int rotationQuarterTurns_ = 0;
     bool dragging_ = false;
     QPointF lastDragPosition_;
-    QColor viewportBackground_{QStringLiteral("#202020")};
-    bool statusVisible_ = true;
+    QColor viewportBackground_{QStringLiteral("#181A1B")};
     bool restoreWindowGeometry_ = false;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
     QList<QAction *> imageActions_;
     QString informationText_;
-#if defined(Q_OS_MACOS)
+    QDialog *informationDialog_ = nullptr;
+    QLabel *informationFacts_ = nullptr;
     QMenuBar *applicationMenuBar_ = nullptr;
-#endif
+    QMenu *contextMenu_ = nullptr;
+    QDialog *settingsDialog_ = nullptr;
+    QComboBox *settingsWheel_ = nullptr;
+    QPushButton *settingsBackground_ = nullptr;
+    QCheckBox *settingsStatus_ = nullptr;
+    QSpinBox *settingsCache_ = nullptr;
+    QCheckBox *settingsGeometry_ = nullptr;
+    QDialogButtonBox *settingsButtons_ = nullptr;
+    SettingsValues settingsOpeningValues_;
+    QColor settingsDialogBackground_{QStringLiteral("#181A1B")};
 #ifdef FLICK_ENABLE_TEST_HARNESS
     QHash<QString, int> decodeCounts_;
     bool failExternalActionsForTest_ = false;
@@ -1631,6 +2061,13 @@ void scheduleCapture(ViewerWindow &window, QObject &context, const bool waitUnti
 
 int main(int argc, char *argv[])
 {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    const QString testSettingsRoot = qEnvironmentVariable("FLICK_TEST_SETTINGS_ROOT");
+    if (!testSettingsRoot.isEmpty()) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, testSettingsRoot);
+    }
+#endif
     FlickApplication application(argc, argv);
     QAccessible::installFactory(flickAccessibleInterface);
     QApplication::setApplicationName(QStringLiteral("Flick"));
@@ -1638,6 +2075,18 @@ int main(int argc, char *argv[])
     QApplication::setApplicationVersion(QStringLiteral(FLICK_VERSION));
     QApplication::setDesktopFileName(QStringLiteral("org.flick.Flick"));
     QApplication::setOrganizationName(QStringLiteral("Flick"));
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    if (qEnvironmentVariableIsSet("FLICK_TEST_DARK_CHROME")) {
+        QPalette palette = application.palette();
+        palette.setColor(QPalette::Window, QColor(QStringLiteral("#2b2b2b")));
+        palette.setColor(QPalette::WindowText, Qt::white);
+        palette.setColor(QPalette::Base, QColor(QStringLiteral("#202020")));
+        palette.setColor(QPalette::Text, Qt::white);
+        palette.setColor(QPalette::Button, QColor(QStringLiteral("#353535")));
+        palette.setColor(QPalette::ButtonText, Qt::white);
+        application.setPalette(palette);
+    }
+#endif
 
     const QStringList arguments = application.arguments();
     const QString imagePath = arguments.size() > 1 ? arguments.at(1) : QString{};
@@ -1648,9 +2097,8 @@ int main(int argc, char *argv[])
     auto platformServices = createPlatformServices();
 #endif
     ViewerWindow window(imagePath, std::move(platformServices));
-    application.setFileOpenHandler([&window](const QString &path) {
-        window.openExternalFile(path);
-    });
+    application.setFileOpenHandler(
+        [&window](const QString &path) { window.openExternalFile(path); });
     window.show();
     window.setFocus();
 #ifdef FLICK_ENABLE_TEST_HARNESS
@@ -1679,14 +2127,53 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.settingsState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("StoredSettingsState")) {
+                fprintf(stdout, "%s\n", window.storedSettingsState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("SettingsFileName")) {
+                fprintf(stdout, "%s\n", window.settingsFileName().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("SettingsDialogStructure")) {
+                fprintf(stdout, "%s\n", window.settingsDialogStructure().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("SettingsDialogGeometry")) {
+                fprintf(stdout, "%s\n", window.settingsDialogGeometry().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("SettingsDialogFocusOrder")) {
+                fprintf(stdout, "%s\n", window.settingsDialogFocusOrder().constData());
+                fflush(stdout);
+                return;
             } else if (input.startsWith("LastPickerDirectory")) {
                 fprintf(stdout, "%s\n",
-                        QSettings().value(QStringLiteral("filePicker/lastDirectory"))
-                            .toString().toUtf8().constData());
+                        QSettings()
+                            .value(QStringLiteral("filePicker/lastDirectory"))
+                            .toString()
+                            .toUtf8()
+                            .constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("WindowGeometry")) {
                 fprintf(stdout, "%s\n", window.windowGeometryState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("PresentationState")) {
+                fprintf(stdout, "%s\n", window.presentationState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("PresentationMotionContract")) {
+                fprintf(stdout, "%s\n", window.presentationMotionContract().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ActivePresentationTransition")) {
+                fprintf(stdout, "%s\n", window.activePresentationTransition().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("BackgroundPickerTitle")) {
+                fprintf(stdout, "%s\n", window.backgroundPickerTitle().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SaveWindowGeometry")) {
@@ -1697,6 +2184,25 @@ int main(int argc, char *argv[])
             } else if (input.startsWith("ApplySettings:")) {
                 window.applyTestSettings(
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
+                return;
+            } else if (input.startsWith("OpenSettings")) {
+                if (QAction *settings =
+                        window.findChild<QAction *>(QStringLiteral("settingsAction"))) {
+                    settings->trigger();
+                }
+                return;
+            } else if (input.startsWith("PreviewSettings:")) {
+                window.previewTestSettings(
+                    QString::fromUtf8(input.mid(16).trimmed()).split(QLatin1Char(':')));
+                return;
+            } else if (input.startsWith("ResetSettings")) {
+                window.resetTestSettings();
+                return;
+            } else if (input.startsWith("ApplySettingsDialog")) {
+                window.finishTestSettings(true);
+                return;
+            } else if (input.startsWith("CancelSettings")) {
+                window.finishTestSettings(false);
                 return;
             } else if (input.startsWith("DisplayProfileChanged:")) {
                 testPlatformServices->setDisplayIccProfile(
@@ -1720,8 +2226,15 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.uiState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("FocusViewingSurface")) {
+                window.focusViewingSurfaceForTest();
+                return;
             } else if (input.startsWith("InformationState")) {
                 fprintf(stdout, "%s\n", window.informationState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("InformationDialogState")) {
+                fprintf(stdout, "%s\n", window.informationDialogState().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("ClipboardText")) {
@@ -1737,13 +2250,39 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.contextActions().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("ContextMenuStructure")) {
+                fprintf(stdout, "%s\n", window.contextMenuStructure().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ContextMenuGeometry")) {
+                fprintf(stdout, "%s\n", window.contextMenuGeometry().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("ApplicationMenuStructure")) {
+                fprintf(stdout, "%s\n", window.applicationMenuStructure().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("CommandAvailability")) {
+                fprintf(stdout, "%s\n", window.commandAvailability().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("QuitActionState")) {
+                fprintf(stdout, "%s\n", window.quitActionState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("TriggerQuit")) {
+                window.findChild<QAction *>(QStringLiteral("applicationQuitAction"))->trigger();
+                return;
+            } else if (input.startsWith("FocusState")) {
+                fprintf(stdout, "%s\n", window.focusState().constData());
+                fflush(stdout);
+                return;
             } else if (input.startsWith("AccessibilityState")) {
                 fprintf(stdout, "%s\n", window.accessibilityState().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("RevealedPath")) {
-                fprintf(stdout, "%s\n",
-                        testPlatformServices->revealedPath().toUtf8().constData());
+                fprintf(stdout, "%s\n", testPlatformServices->revealedPath().toUtf8().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("Feedback")) {
@@ -1757,6 +2296,17 @@ int main(int argc, char *argv[])
             } else if (input.startsWith("LargeImageState")) {
                 fprintf(stdout, "%s\n", window.largeImageState().constData());
                 fflush(stdout);
+                return;
+            } else if (input.startsWith("PrimaryActionState")) {
+                fprintf(stdout, "%s\n", window.primaryActionState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("FocusDetails")) {
+                window.findChild<QToolButton *>()->setFocus(Qt::OtherFocusReason);
+                return;
+            } else if (input.startsWith("FocusSkip")) {
+                window.findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))
+                    ->setFocus(Qt::OtherFocusReason);
                 return;
             } else if (input.startsWith("ToggleDetails")) {
                 if (auto *button = window.findChild<QToolButton *>()) {
@@ -1789,16 +2339,36 @@ int main(int argc, char *argv[])
                                  Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(&window, &event);
                 delete mimeData;
+            } else if (input.startsWith("BeginDrag:")) {
+                auto *mimeData = new QMimeData;
+                mimeData->setUrls(
+                    {QUrl::fromLocalFile(QString::fromUtf8(input.mid(10).trimmed()))});
+                QDragEnterEvent event(window.rect().center(), Qt::CopyAction, mimeData,
+                                      Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(&window, &event);
+                delete mimeData;
+            } else if (input.startsWith("LeaveDrag")) {
+                QDragLeaveEvent event;
+                QApplication::sendEvent(&window, &event);
             } else if (input.startsWith("SelectZoomWheelAction")) {
-                if (auto *action =
-                        window.findChild<QAction *>(QStringLiteral("wheelZoomAction"))) {
+                if (auto *action = window.findChild<QAction *>(QStringLiteral("wheelZoomAction"))) {
                     action->trigger();
                 }
+            } else if (input.startsWith("ContextMenuAtScreenEdge:")) {
+                QWidget *target = window.findChild<QWidget *>(QStringLiteral("viewingSurface"));
+                const QRect available = target->screen()->availableGeometry();
+                const QByteArray corner = input.mid(24).trimmed();
+                const QPoint globalPosition = corner == "TopRight"      ? available.topRight()
+                                              : corner == "BottomLeft"  ? available.bottomLeft()
+                                              : corner == "BottomRight" ? available.bottomRight()
+                                                                        : available.topLeft();
+                QContextMenuEvent event(QContextMenuEvent::Mouse, target->rect().center(),
+                                        globalPosition);
+                QApplication::sendEvent(target, &event);
             } else if (input.startsWith("ContextMenu:")) {
                 const QList<QByteArray> parts = input.trimmed().split(':');
                 if (parts.size() == 3) {
-                    QWidget *target =
-                        window.findChild<QLabel *>(QStringLiteral("imageLabel"));
+                    QWidget *target = window.findChild<QWidget *>(QStringLiteral("viewingSurface"));
                     const QPoint position(parts.at(1).toInt(), parts.at(2).toInt());
                     QContextMenuEvent event(QContextMenuEvent::Mouse, position,
                                             target->mapToGlobal(position));
@@ -1806,8 +2376,7 @@ int main(int argc, char *argv[])
                 }
             } else if (input.startsWith("MenuDown") || input.startsWith("MenuEnter")) {
                 if (QWidget *menu = QApplication::activePopupWidget()) {
-                    const int key =
-                        input.startsWith("MenuDown") ? Qt::Key_Down : Qt::Key_Return;
+                    const int key = input.startsWith("MenuDown") ? Qt::Key_Down : Qt::Key_Return;
                     QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
                     QApplication::sendEvent(menu, &event);
                 }
@@ -1827,14 +2396,14 @@ int main(int argc, char *argv[])
                     QWidget *target = window.findChild<QScrollArea *>()->viewport();
                     const QPointF start(parts.at(1).toInt(), parts.at(2).toInt());
                     const QPointF end(parts.at(3).toInt(), parts.at(4).toInt());
-                    QMouseEvent press(QEvent::MouseButtonPress, start, start, start,
-                                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QMouseEvent press(QEvent::MouseButtonPress, start, start, start, Qt::LeftButton,
+                                      Qt::LeftButton, Qt::NoModifier);
                     QApplication::sendEvent(target, &press);
-                    QMouseEvent move(QEvent::MouseMove, end, end, end, Qt::NoButton,
-                                     Qt::LeftButton, Qt::NoModifier);
+                    QMouseEvent move(QEvent::MouseMove, end, end, end, Qt::NoButton, Qt::LeftButton,
+                                     Qt::NoModifier);
                     QApplication::sendEvent(target, &move);
-                    QMouseEvent release(QEvent::MouseButtonRelease, end, end, end,
-                                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QMouseEvent release(QEvent::MouseButtonRelease, end, end, end, Qt::LeftButton,
+                                        Qt::NoButton, Qt::NoModifier);
                     QApplication::sendEvent(target, &release);
                 }
             } else if (input.startsWith("Move:") || input.startsWith("DoubleClick:")) {
@@ -1859,35 +2428,39 @@ int main(int argc, char *argv[])
                 const bool ctrlPlus = input.startsWith("CtrlPlus");
                 const bool ctrlMinus = input.startsWith("CtrlMinus");
                 const bool shift = input.startsWith("Shift");
-                const int qtKey = ctrlO                         ? Qt::Key_O
-                                  : copyImage                   ? Qt::Key_C
-                                  : copyPath                    ? Qt::Key_C
-                                  : reveal                      ? Qt::Key_R
-                                  : ctrlPlus                    ? Qt::Key_Plus
-                                  : ctrlMinus                   ? Qt::Key_Minus
+                const int qtKey = ctrlO                             ? Qt::Key_O
+                                  : copyImage                       ? Qt::Key_C
+                                  : copyPath                        ? Qt::Key_C
+                                  : reveal                          ? Qt::Key_R
+                                  : ctrlPlus                        ? Qt::Key_Plus
+                                  : ctrlMinus                       ? Qt::Key_Minus
                                   : input.startsWith("Information") ? Qt::Key_I
-                                  : input.startsWith("Fit")     ? Qt::Key_F
-                                  : input.startsWith("ActualSize") ? Qt::Key_1
-                                  : input.startsWith("ShiftLeft") ? Qt::Key_Left
-                                  : input.startsWith("ShiftRight") ? Qt::Key_Right
-                                  : input.startsWith("ShiftUp") ? Qt::Key_Up
-                                  : input.startsWith("ShiftDown") ? Qt::Key_Down
-                                  : input.startsWith("RotateLeft") ? Qt::Key_L
+                                  : input.startsWith("Fit")         ? Qt::Key_F
+                                  : input.startsWith("ActualSize")  ? Qt::Key_1
+                                  : input.startsWith("ShiftLeft")   ? Qt::Key_Left
+                                  : input.startsWith("ShiftRight")  ? Qt::Key_Right
+                                  : input.startsWith("ShiftUp")     ? Qt::Key_Up
+                                  : input.startsWith("ShiftDown")   ? Qt::Key_Down
+                                  : input.startsWith("RotateLeft")  ? Qt::Key_L
                                   : input.startsWith("RotateRight") ? Qt::Key_R
-                                  : input.startsWith("F11")     ? Qt::Key_F11
-                                  : input.startsWith("Refresh") ? Qt::Key_F5
-                                  : input.startsWith("Escape")  ? Qt::Key_Escape
-                                  : input.startsWith("Left")    ? Qt::Key_Left
-                                  : input.startsWith("Space")   ? Qt::Key_Space
-                                                                : Qt::Key_Right;
+                                  : input.startsWith("F11")         ? Qt::Key_F11
+                                  : input.startsWith("Refresh")     ? Qt::Key_F5
+                                  : input.startsWith("Enter")       ? Qt::Key_Return
+                                  : input.startsWith("Escape")      ? Qt::Key_Escape
+                                  : input.startsWith("Left")        ? Qt::Key_Left
+                                  : input.startsWith("Space")       ? Qt::Key_Space
+                                                                    : Qt::Key_Right;
                 QKeyEvent event(QEvent::KeyPress, qtKey,
-                                (ctrlO || copyImage || ctrlPlus || ctrlMinus)
-                                    ? Qt::ControlModifier
-                                : (copyPath || reveal)
-                                    ? Qt::ControlModifier | Qt::ShiftModifier
-                                : shift ? Qt::ShiftModifier
-                                        : Qt::NoModifier);
-                QWidget *target = QApplication::focusWidget();
+                                (ctrlO || copyImage || ctrlPlus || ctrlMinus) ? Qt::ControlModifier
+                                : (copyPath || reveal) ? Qt::ControlModifier | Qt::ShiftModifier
+                                : shift                ? Qt::ShiftModifier
+                                                       : Qt::NoModifier);
+                QWidget *target = QApplication::activePopupWidget();
+                if (input.startsWith("Enter")) {
+                    target = &window;
+                } else if (target == nullptr) {
+                    target = QApplication::focusWidget();
+                }
                 QApplication::sendEvent(target != nullptr ? target : &window, &event);
             }
             scheduleCapture(window, application, !captureImmediately);

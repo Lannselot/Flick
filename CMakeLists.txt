@@ -44,6 +44,8 @@ function(add_flick_executable target)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/image_loading.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewing_surface.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewing_surface.h
     )
     target_link_libraries(${target} PRIVATE Qt6::Concurrent Qt6::Widgets)
     target_compile_definitions(${target} PRIVATE FLICK_VERSION="${PROJECT_VERSION}")

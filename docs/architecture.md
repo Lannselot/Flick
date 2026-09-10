@@ -22,6 +22,7 @@ flowchart TB
         Image[QImage frames<br/>декодированные пиксели]
         Animation[Animation timer<br/>frame delays and loops]
         Canvas[ImageCanvas<br/>clipped painting]
+        Surface[ViewingSurface<br/>presentation states and feedback]
         Viewport[QScrollArea]
         Feedback[Empty state и<br/>временные сообщения]
         Settings[QSettings]
@@ -41,8 +42,10 @@ flowchart TB
         Window --> Animation
         Animation --> Canvas
         Window --> Canvas
-        Canvas --> Viewport
-        Window --> Feedback
+        Window --> Surface
+        Canvas --> Surface
+        Surface --> Viewport
+        Surface --> Feedback
         Window --> Settings
         Window --> Platform
     end
@@ -67,10 +70,16 @@ prefetch и ограниченного кеша. Его публичный seam 
 `prefetchAdjacent` и outcome handlers. Функция `ImageLoading::decode` скрывает
 `QImageReader`, safety limits и метаданные анимации за типизированным `DecodeOutcome`.
 
-`ViewerWindow` хранит view state и презентационное состояние: виджеты, диалоги,
-анимационный таймер, zoom, pan, rotation и преобразование цвета. Окно переводит
-ввод в вызовы модулей, а их outcomes — в видимое состояние. Оно не дублирует
-выбранный путь current image, кеш, множество запросов или политику prefetch.
+`ViewerWindow` хранит view state изображения: анимационный таймер, zoom, pan, rotation и
+преобразование цвета. Окно переводит ввод в вызовы модулей, а их outcomes — в переходы
+`ViewingSurface`. Оно не дублирует выбранный путь current image, кеш, множество запросов или
+политику prefetch.
+
+`ViewingSurface` — единственный владелец presentation state, status overlay, first-use teaching,
+drop feedback и связанных с ними виджетов, таймеров и opacity transitions. Его публичный seam —
+переходы `showEmpty`, `beginLoading`, `showDisplayed`, `showError` и
+`showLargeImageConfirmation`, а также операции transient feedback. Модуль получает только
+контекст текущего статуса и команды пользователя; inventory Qt-виджетов наружу не публикуется.
 
 Для последовательности, открытой из одного файла, `QFileSystemWatcher` следит
 за содержащим его каталогом. При изменении каталога `ViewerWindow` передаёт наблюдение
