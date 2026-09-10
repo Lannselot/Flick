@@ -89,6 +89,13 @@ enum class WheelAction
     Zoom
 };
 
+enum class AnimationPlayback
+{
+    Playing,
+    Paused,
+    Finished
+};
+
 using ImageLoading::LoadedImage;
 
 QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
@@ -1232,7 +1239,10 @@ class ViewerWindow final : public QWidget
                                                                 : tr("Loading…");
         const QString animation = !displayed                        ? tr("Unavailable")
                                   : currentImage_.frames.size() < 2 ? tr("Static image")
-                                  : animationPaused_                ? tr("Paused")
+                                  : animationPlayback_ == AnimationPlayback::Paused
+                                      ? tr("Paused")
+                                  : animationPlayback_ == AnimationPlayback::Finished
+                                      ? tr("Finished")
                                                                     : tr("Playing");
         return tr("Path: %1\nFormat: %2\nDimensions: %3\nSize: %4 bytes\n"
                   "Modified: %5\nZoom: %6%\nRotation: %7°\nAnimation: "
@@ -1553,7 +1563,7 @@ class ViewerWindow final : public QWidget
         currentImage_ = decoded;
         currentFrame_ = 0;
         completedLoops_ = 0;
-        animationPaused_ = false;
+        animationPlayback_ = AnimationPlayback::Playing;
         pausedDelayMilliseconds_ = 0;
         rotationQuarterTurns_ = 0;
         applyInitialZoom();
@@ -1772,7 +1782,8 @@ class ViewerWindow final : public QWidget
 
     void advanceAnimation()
     {
-        if (currentImage_.frames.size() < 2 || animationPaused_) {
+        if (currentImage_.frames.size() < 2 ||
+            animationPlayback_ == AnimationPlayback::Paused) {
             return;
         }
         if (currentFrame_ + 1 < currentImage_.frames.size()) {
@@ -1781,6 +1792,8 @@ class ViewerWindow final : public QWidget
             currentFrame_ = 0;
             ++completedLoops_;
         } else {
+            animationPlayback_ = AnimationPlayback::Finished;
+            updateInformation();
             return;
         }
         showFrame(currentFrame_);
@@ -1789,15 +1802,16 @@ class ViewerWindow final : public QWidget
 
     void toggleAnimation()
     {
-        if (currentImage_.frames.size() < 2) {
+        if (currentImage_.frames.size() < 2 ||
+            animationPlayback_ == AnimationPlayback::Finished) {
             return;
         }
-        if (animationPaused_) {
-            animationPaused_ = false;
+        if (animationPlayback_ == AnimationPlayback::Paused) {
+            animationPlayback_ = AnimationPlayback::Playing;
             animationTimer_->start(std::max(1, pausedDelayMilliseconds_));
         } else {
             pausedDelayMilliseconds_ = std::max(1, animationTimer_->remainingTime());
-            animationPaused_ = true;
+            animationPlayback_ = AnimationPlayback::Paused;
             animationTimer_->stop();
         }
         updateInformation();
@@ -1923,7 +1937,7 @@ class ViewerWindow final : public QWidget
     int currentFrame_ = 0;
     int completedLoops_ = 0;
     int pausedDelayMilliseconds_ = 0;
-    bool animationPaused_ = false;
+    AnimationPlayback animationPlayback_ = AnimationPlayback::Finished;
     bool animateDisplayedPresentation_ = true;
     WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;

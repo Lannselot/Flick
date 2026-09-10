@@ -5,15 +5,22 @@ playing, paused, or finished, including when authored finite-loop playback ends 
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] A multi-frame image with remaining playback reports Playing.
-- [ ] A user-paused animation reports Paused and returns to Playing when resumed.
-- [ ] A finite animation that exhausts its authored loop count reports Finished without requiring
+- [x] A multi-frame image with remaining playback reports Playing.
+- [x] A user-paused animation reports Paused and returns to Playing when resumed.
+- [x] A finite animation that exhausts its authored loop count reports Finished without requiring
       user input.
-- [ ] An infinitely looping animation never reports Finished while its timer remains active.
-- [ ] A static image has a stable non-playing description consistent with the existing information
+- [x] An infinitely looping animation never reports Finished while its timer remains active.
+- [x] A static image has a stable non-playing description consistent with the existing information
       vocabulary.
-- [ ] The open Image Information dialog updates when playback naturally finishes.
-- [ ] An application-level regression test observes the transition to Finished through the public
+- [x] The open Image Information dialog updates when playback naturally finishes.
+- [x] An application-level regression test observes the transition to Finished through the public
       application boundary.
+
+## Comments
+
+- Added an explicit terminal playback state that is reset for each displayed image and updates an
+  open Image Information dialog when a finite animation naturally exhausts its authored loops.
+- Application-boundary coverage now distinguishes playing, paused, resumed, finished, infinitely
+  looping, and static-image descriptions without inspecting the animation timer directly.

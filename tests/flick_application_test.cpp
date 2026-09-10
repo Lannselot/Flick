@@ -66,6 +66,7 @@ private slots:
     void fullscreenTeachingAppearsOnlyOnFirstEntry();
     void fullscreenInactivityHidesStatusAndPointerWithoutBlockingKeyboard();
     void informationDialogStaysLiveWhileBrowsing();
+    void informationDialogReportsNaturalAnimationCompletion();
     void copiesPathAndRenderedImageAndExposesContextCommands();
     void exposesGroupedCommandSurfacesWithoutNavigationRows();
     void contextMenuStaysReachableNearEveryScreenEdge();
@@ -1700,6 +1701,41 @@ void FlickApplicationTest::informationDialogStaysLiveWhileBrowsing()
             .split('x');
     QVERIFY(highDpiSize.at(0).toInt() <= 480);
     QVERIFY(highDpiSize.at(1).toInt() <= 320);
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Escape"));
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Space"));
+    sendCommandAndWaitForScreenshot(animation, QByteArrayLiteral("Information"));
+    QVERIFY(sendQueryAndWaitForReply(animation, QByteArrayLiteral("InformationState"))
+                .contains("Animation: Playing"));
+}
+
+void FlickApplicationTest::informationDialogReportsNaturalAnimationCompletion()
+{
+    const QString animated =
+        writeFixture(QStringLiteral("animated.gif.base64"), QStringLiteral("finite.gif"));
+    QVERIFY(!animated.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {animated});
+    waitForScreenshot(flick);
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Information"));
+    QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"))
+                .contains("Animation: Playing"));
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("InformationState"))
+            .contains("Animation: Finished"),
+        2000);
+
+    const QString looping =
+        writeFixture(QStringLiteral("animated.webp.base64"), QStringLiteral("looping.webp"));
+    QVERIFY(!looping.isEmpty());
+    RunningFlick infinite;
+    start(infinite, {looping});
+    waitForScreenshot(infinite);
+    sendCommandAndWaitForScreenshot(infinite, QByteArrayLiteral("Information"));
+    QTest::qWait(900);
+    QVERIFY(sendQueryAndWaitForReply(infinite, QByteArrayLiteral("InformationState"))
+                .contains("Animation: Playing"));
 }
 
 void FlickApplicationTest::copiesPathAndRenderedImageAndExposesContextCommands()
