@@ -20,6 +20,17 @@ namespace {
 constexpr int LoadingIndicatorDelayMilliseconds = 120;
 constexpr int StatusVisibilityMilliseconds = 2000;
 constexpr int FeedbackVisibilityMilliseconds = 1500;
+
+int loadingIndicatorDelayMilliseconds() {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  const int testDelay = qEnvironmentVariableIntValue(
+      "FLICK_TEST_LOADING_INDICATOR_DELAY_MS");
+  if (testDelay > 0) {
+    return testDelay;
+  }
+#endif
+  return LoadingIndicatorDelayMilliseconds;
+}
 constexpr int StatusFadeMilliseconds = 160;
 } // namespace
 
@@ -229,7 +240,7 @@ void ViewingSurface::beginLoading(const QString &filename) {
   loadingIndicator_->hide();
   loadingFilename_->hide();
   showPresentation(loadingState_, State::Loading);
-  loadingTimer_->start(LoadingIndicatorDelayMilliseconds);
+  loadingTimer_->start(loadingIndicatorDelayMilliseconds());
 }
 void ViewingSurface::showDisplayed() {
   loadingTimer_->stop();

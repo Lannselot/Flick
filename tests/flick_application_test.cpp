@@ -178,6 +178,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), flick.screenshotPath);
     environment.insert(QStringLiteral("FLICK_TEST_FILE_PICKER_SELECTION"), pickerSelection);
     environment.insert(QStringLiteral("FLICK_TEST_REDUCED_MOTION"), QStringLiteral("1"));
+    environment.insert(QStringLiteral("FLICK_TEST_LOADING_INDICATOR_DELAY_MS"),
+                       QStringLiteral("500"));
     environment.insert(QStringLiteral("FLICK_TEST_SETTINGS_ROOT"),
                        settingsRoot.isEmpty() ? config : settingsRoot);
     if (!scaleFactor.isEmpty()) {
@@ -418,7 +420,7 @@ void FlickApplicationTest::delaysLoadingPresentationAndClearsPreviousImage()
     const QImage beforeThreshold = captureAfter(flick, 0);
     QVERIFY(!containsColor(beforeThreshold, firstColor));
 
-    QTest::qWait(100);
+    QTest::qWait(500);
     const QByteArray loading =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState"));
     QCOMPARE(loading, QByteArrayLiteral("loading|image2.png|indicator-visible"));
