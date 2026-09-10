@@ -68,6 +68,7 @@ private slots:
     void informationDialogStaysLiveWhileBrowsing();
     void copiesPathAndRenderedImageAndExposesContextCommands();
     void exposesGroupedCommandSurfacesWithoutNavigationRows();
+    void contextMenuStaysReachableNearEveryScreenEdge();
     void restoresViewingFocusAndAppliesEscapePrecedence();
     void revealsCurrentFileAndReportsExternalActionFailures();
     void exposesAccessibleKeyboardActions();
@@ -1795,6 +1796,34 @@ void FlickApplicationTest::exposesGroupedCommandSurfacesWithoutNavigationRows()
     QVERIFY(application.contains("Settings"));
     QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("CommandAvailability"))
                 .contains("Fit to Window=enabled"));
+}
+
+void FlickApplicationTest::contextMenuStaysReachableNearEveryScreenEdge()
+{
+    RunningFlick flick;
+    start(flick);
+    waitForScreenshot(flick);
+
+    for (const QByteArray &corner : {QByteArrayLiteral("TopLeft"),
+                                     QByteArrayLiteral("TopRight"),
+                                     QByteArrayLiteral("BottomLeft"),
+                                     QByteArrayLiteral("BottomRight")}) {
+        sendCommandAndWaitForScreenshot(flick,
+                                        QByteArrayLiteral("ContextMenuAtScreenEdge:") + corner);
+        const QList<QByteArray> geometry =
+            sendQueryAndWaitForReply(flick, QByteArrayLiteral("ContextMenuGeometry")).split('|');
+        QCOMPARE(geometry.size(), 2);
+        const QList<QByteArray> menu = geometry.at(0).split(',');
+        const QList<QByteArray> available = geometry.at(1).split(',');
+        QCOMPARE(menu.size(), 4);
+        QCOMPARE(available.size(), 4);
+        const QRect menuRect(menu.at(0).toInt(), menu.at(1).toInt(), menu.at(2).toInt(),
+                             menu.at(3).toInt());
+        const QRect availableRect(available.at(0).toInt(), available.at(1).toInt(),
+                                  available.at(2).toInt(), available.at(3).toInt());
+        QVERIFY(availableRect.contains(menuRect));
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
+    }
 }
 
 void FlickApplicationTest::restoresViewingFocusAndAppliesEscapePrecedence()

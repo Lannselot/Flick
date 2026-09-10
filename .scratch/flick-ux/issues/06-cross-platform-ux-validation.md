@@ -6,7 +6,7 @@ Linux and macOS, with implementation-specific prototype questions resolved by ev
 **Blocked by:** 02: Transient status and first-use feedback; 03: Command surfaces and Escape
 precedence; 04: Transactional Settings dialog; 05: Live Image Information dialog.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 - [ ] Every presentation state and auxiliary surface is exercised at 480×320 and a typical desktop
       size under light and dark system chrome.
@@ -21,3 +21,18 @@ precedence; 04: Transactional Settings dialog; 05: Live Image Information dialog
 - [ ] Any platform-specific adaptation preserves common behavior and viewing-surface geometry while
       following native menu, shortcut, button-ordering, and window conventions.
 
+## Validation evidence
+
+- `flick.application` exercises the accepted states, dialogs, command surfaces, accessibility,
+  selected high-DPI/dark-palette variants, reduced-motion behavior, and screen-edge popup containment
+  through the running application boundary. These checks support but do not complete the native
+  visual and assistive-technology matrix.
+- `flick.performance-smoke` keeps the performance probe executable in CI; representative reports now
+  include an uncached open-to-visible Qt decode and repaint measurement for evaluating the 120 ms
+  loading threshold.
+- `docs/ux-validation.md` defines the native GNOME, KDE, and macOS matrix, required evidence, and the
+  boundary between deterministic checks and real-desktop release acceptance. Platform-specific
+  chrome may differ, while common presentation meaning and viewing-surface geometry may not.
+- The acceptance criteria remain unchecked until the documented interactive runs are recorded on
+  representative GNOME, KDE, and macOS desktops. Offscreen Qt containment and the local smoke timing
+  are automated supporting evidence, not native-desktop or representative timing evidence.

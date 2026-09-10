@@ -24,14 +24,21 @@ private temporary directory:
 
 It measures through the running-process boundary. The application performs its
 normal asynchronous decoding, sequence construction, prefetch, rendering,
-large-image guard, and cache eviction. The test harness only requests the
+large-image guard, and cache eviction. `uncached_open_visible` drops a newly
+created image from a separate directory into the running application, ensuring
+that the result includes a real Qt decode and the repaint that makes it visible,
+without benefiting from sequence prefetch. The test harness only requests the
 already-rendered window image and observable state; it does not bypass those
 paths. `--smoke` uses smaller fixtures to validate the benchmark itself in
 CTest. It is not a performance gate.
 
 Record at least three representative runs after reboot, with the machine idle,
 on AC power and with the CPU governor unchanged. Keep the median JSON result
-with the release. Do not compare debug and release builds.
+with the release. Compare `uncached_open_visible` with the 120 ms loading
+indicator delay: retain the delay when ordinary images usually paint before it
+and larger images reliably receive visible loading feedback; adjust the delay
+only from results on all supported platforms. Do not compare debug and release
+builds.
 
 ## Baseline machine and result
 

@@ -211,6 +211,15 @@ int main(int argc, char **argv)
     QThread::msleep(smoke ? 20 : 250);
     const qint64 navigation = launch.commandToVisible("Right");
 
+    QTemporaryDir uncachedCorpus;
+    const QString uncachedImage = uncachedCorpus.filePath(QStringLiteral("uncached.png"));
+    if (!uncachedCorpus.isValid() ||
+        !writeImage(uncachedImage, representativeSize, QColor(46, 139, 87))) {
+        return 2;
+    }
+    const qint64 uncachedOpen =
+        launch.commandToVisible(QByteArrayLiteral("Drop:") + uncachedImage.toUtf8());
+
     const qint64 rssBefore = residentBytes(launch.pid());
     for (int index = 0; index < (smoke ? 2 : 12); ++index) {
         launch.commandToVisible(index % 2 == 0 ? "Left" : "Right");
@@ -269,6 +278,7 @@ int main(int argc, char **argv)
         {QStringLiteral("sequence_items"), smoke ? 100 : 10000},
         {QStringLiteral("cold_launch_visible"), measurement(coldLaunch, QStringLiteral("ms"))},
         {QStringLiteral("prefetched_navigation"), measurement(navigation, QStringLiteral("ms"))},
+        {QStringLiteral("uncached_open_visible"), measurement(uncachedOpen, QStringLiteral("ms"))},
         {QStringLiteral("ui_query_during_decode"),
          measurement(responsiveness, QStringLiteral("ms"))},
         {QStringLiteral("cache_reported"), measurement(cachedBytes, QStringLiteral("bytes"))},
@@ -285,7 +295,8 @@ int main(int argc, char **argv)
          QJsonObject{{QStringLiteral("cold_launch_visible_ms"), 300},
                      {QStringLiteral("prefetched_navigation_ms"), 100}}}};
     fputs(QJsonDocument(result).toJson(QJsonDocument::Indented).constData(), stdout);
-    return coldLaunch < 0 || navigation < 0 || responsiveness < 0 || cachedBytes < 0 ||
+    return coldLaunch < 0 || navigation < 0 || uncachedOpen < 0 || responsiveness < 0 ||
+                   cachedBytes < 0 ||
                    cachedBytes > cacheBudget || exceptionalResponse < 0 ||
 #ifdef Q_OS_LINUX
                    rssBefore < 0 || rssAfter < 0 || exceptionalRss < 0 ||

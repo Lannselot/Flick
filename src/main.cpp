@@ -587,6 +587,17 @@ public:
         return menuStructure(contextMenu_).toUtf8();
     }
 
+    QByteArray contextMenuGeometry() const
+    {
+        const auto encode = [](const QRect &rect) {
+            return QByteArray::number(rect.x()) + ',' + QByteArray::number(rect.y()) + ',' +
+                   QByteArray::number(rect.width()) + ',' + QByteArray::number(rect.height());
+        };
+        QScreen *screen = contextMenu_->screen();
+        return encode(contextMenu_->frameGeometry()) + '|' +
+               encode(screen != nullptr ? screen->availableGeometry() : QRect{});
+    }
+
     QByteArray applicationMenuStructure() const
     {
         return menuStructure(applicationMenuBar_).toUtf8();
@@ -2574,6 +2585,10 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.contextMenuStructure().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("ContextMenuGeometry")) {
+                fprintf(stdout, "%s\n", window.contextMenuGeometry().constData());
+                fflush(stdout);
+                return;
             } else if (input.startsWith("ApplicationMenuStructure")) {
                 fprintf(stdout, "%s\n", window.applicationMenuStructure().constData());
                 fflush(stdout);
@@ -2654,6 +2669,19 @@ int main(int argc, char *argv[])
                         window.findChild<QAction *>(QStringLiteral("wheelZoomAction"))) {
                     action->trigger();
                 }
+            } else if (input.startsWith("ContextMenuAtScreenEdge:")) {
+                QWidget *target =
+                    window.findChild<QWidget *>(QStringLiteral("viewingSurface"));
+                const QRect available = target->screen()->availableGeometry();
+                const QByteArray corner = input.mid(24).trimmed();
+                const QPoint globalPosition =
+                    corner == "TopRight"      ? available.topRight()
+                    : corner == "BottomLeft" ? available.bottomLeft()
+                    : corner == "BottomRight" ? available.bottomRight()
+                                              : available.topLeft();
+                QContextMenuEvent event(QContextMenuEvent::Mouse, target->rect().center(),
+                                        globalPosition);
+                QApplication::sendEvent(target, &event);
             } else if (input.startsWith("ContextMenu:")) {
                 const QList<QByteArray> parts = input.trimmed().split(':');
                 if (parts.size() == 3) {
