@@ -57,6 +57,7 @@ private slots:
     void wheelActionDefaultsToNavigationWithCtrlZoom();
     void wheelActionCanSwitchToZoomWithCtrlNavigation();
     void settingsApplyImmediatelyAndPersistAcrossLaunches();
+    void settingsDialogPreviewsCommitsRollsBackAndResets();
     void temporarilyRotatesCurrentViewAndResetsOnNavigation();
     void togglesFullscreenFromKeyboardAndPointer();
     void transientStatusReportsViewContextAndReappearsOnMouseMovement();
@@ -90,7 +91,8 @@ private:
     void start(RunningFlick &flick, const QStringList &arguments = {},
                const QString &pickerSelection = {}, int decodeDelayMilliseconds = 0,
                int cacheBudgetBytes = 0, const QString &configHome = {},
-               qint64 largeAllocationLimitBytes = 0);
+               qint64 largeAllocationLimitBytes = 0, const QString &scaleFactor = {},
+               bool darkChrome = false);
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
     void sendCommand(RunningFlick &flick, const QByteArray &command);
@@ -140,7 +142,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
                                  const int decodeDelayMilliseconds,
                                  const int cacheBudgetBytes,
                                  const QString &configHome,
-                                 const qint64 largeAllocationLimitBytes)
+                                 const qint64 largeAllocationLimitBytes,
+                                 const QString &scaleFactor, const bool darkChrome)
 {
     QVERIFY(flick.environment.isValid());
     const QString config = configHome.isEmpty()
@@ -169,6 +172,12 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), flick.screenshotPath);
     environment.insert(QStringLiteral("FLICK_TEST_FILE_PICKER_SELECTION"), pickerSelection);
     environment.insert(QStringLiteral("FLICK_TEST_REDUCED_MOTION"), QStringLiteral("1"));
+    if (!scaleFactor.isEmpty()) {
+        environment.insert(QStringLiteral("QT_SCALE_FACTOR"), scaleFactor);
+    }
+    if (darkChrome) {
+        environment.insert(QStringLiteral("FLICK_TEST_DARK_CHROME"), QStringLiteral("1"));
+    }
     if (decodeDelayMilliseconds > 0) {
         environment.insert(QStringLiteral("FLICK_TEST_DECODE_DELAY_MS"),
                            QString::number(decodeDelayMilliseconds));
@@ -1292,6 +1301,85 @@ void FlickApplicationTest::settingsApplyImmediatelyAndPersistAcrossLaunches()
     waitForScreenshot(withoutRestoration);
     QVERIFY(sendQueryAndWaitForReply(withoutRestoration, QByteArrayLiteral("WindowGeometry")) !=
             QByteArrayLiteral("640x400"));
+}
+
+void FlickApplicationTest::settingsDialogPreviewsCommitsRollsBackAndResets()
+{
+    QTemporaryDir sharedConfiguration;
+    QVERIFY(sharedConfiguration.isValid());
+    const QString configHome = sharedConfiguration.filePath(QStringLiteral("config"));
+
+    RunningFlick flick;
+    start(flick, {}, {}, 0, 0, configHome);
+    waitForScreenshot(flick);
+
+    sendCommand(flick, QByteArrayLiteral("OpenSettings"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsDialogStructure")),
+             QByteArrayLiteral("Navigation[Mouse wheel action]|Appearance[Viewport background|Show "
+                               "status overlay]|Performance & Window[Decoded cache budget|Restore "
+                               "window size and position]|Reset Defaults|Cancel|Apply"));
+    const QList<QByteArray> dialogSize =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsDialogGeometry")).split('x');
+    QCOMPARE(dialogSize.size(), 2);
+    QVERIFY(dialogSize.at(0).toInt() <= 480);
+    QVERIFY(dialogSize.at(1).toInt() <= 320);
+    const QByteArray focusOrder =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsDialogFocusOrder"));
+    qsizetype previousPosition = -1;
+    for (const QByteArray &name :
+         {QByteArrayLiteral("Mouse wheel action"), QByteArrayLiteral("Viewport background"),
+          QByteArrayLiteral("Show status overlay"), QByteArrayLiteral("Decoded cache budget"),
+          QByteArrayLiteral("Restore window size and position")}) {
+        const qsizetype position = focusOrder.indexOf(name);
+        QVERIFY(position > previousPosition);
+        previousPosition = position;
+    }
+    QVERIFY(focusOrder.contains("Reset Defaults"));
+    QVERIFY(focusOrder.contains("Cancel"));
+    QVERIFY(focusOrder.contains("Apply"));
+
+    RunningFlick highDpiDark;
+    start(highDpiDark, {}, {}, 0, 0, {}, 0, QStringLiteral("2"), true);
+    waitForScreenshot(highDpiDark);
+    sendCommand(highDpiDark, QByteArrayLiteral("OpenSettings"));
+    const QList<QByteArray> highDpiDialogSize =
+        sendQueryAndWaitForReply(highDpiDark, QByteArrayLiteral("SettingsDialogGeometry"))
+            .split('x');
+    QCOMPARE(highDpiDialogSize.size(), 2);
+    QVERIFY(highDpiDialogSize.at(0).toInt() <= 480);
+    QVERIFY(highDpiDialogSize.at(1).toInt() <= 320);
+    sendCommand(flick, QByteArrayLiteral("PreviewSettings:zoom:#123456:0:16:1"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("zoom|#123456|hidden|16777216|restore"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("StoredSettingsState")),
+             QByteArrayLiteral("navigate|#181a1b|visible|536870912|forget"));
+
+    sendCommand(flick, QByteArrayLiteral("CancelSettings"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("navigate|#181a1b|visible|536870912|forget"));
+
+    sendCommand(flick, QByteArrayLiteral("OpenSettings"));
+    sendCommand(flick, QByteArrayLiteral("PreviewSettings:zoom:#abcdef:0:32:1"));
+    sendCommand(flick, QByteArrayLiteral("ResetSettings"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("navigate|#181a1b|visible|536870912|forget"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("StoredSettingsState")),
+             QByteArrayLiteral("navigate|#181a1b|visible|536870912|forget"));
+
+    sendCommand(flick, QByteArrayLiteral("PreviewSettings:zoom:#234567:0:64:1"));
+    sendCommand(flick, QByteArrayLiteral("ApplySettingsDialog"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("StoredSettingsState")),
+             QByteArrayLiteral("zoom|#234567|hidden|67108864|restore"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("FocusState")),
+             QByteArrayLiteral("viewing-surface"));
+
+    flick.process.terminate();
+    QVERIFY(flick.process.waitForFinished(2000));
+    RunningFlick relaunched;
+    start(relaunched, {}, {}, 0, 0, configHome);
+    waitForScreenshot(relaunched);
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("SettingsState")),
+             QByteArrayLiteral("zoom|#234567|hidden|67108864|restore"));
 }
 
 void FlickApplicationTest::temporarilyRotatesCurrentViewAndResetsOnNavigation()
