@@ -117,7 +117,7 @@ must remain legible without blur.
 
 ### Context menu
 
-Organize actions into five short groups:
+Organize viewing actions into five short groups:
 
 1. Open
 2. View: Fit, 100%, zoom, fullscreen
@@ -126,7 +126,8 @@ Organize actions into five short groups:
 5. Preferences
 
 Unavailable commands stay visible and disabled. Previous and Next are taught through shortcuts and
-are not repeated as menu rows.
+are not repeated as menu rows. **Quit Flick** follows as the final context-menu command, separated
+from Preferences, and invokes the same application action exposed by the File menu.
 
 ### Focus and Escape
 

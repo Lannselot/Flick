@@ -4,7 +4,10 @@
 Linux and macOS, with implementation-specific prototype questions resolved by evidence.
 
 **Blocked by:** 02: Transient status and first-use feedback; 03: Command surfaces and Escape
-precedence; 04: Transactional Settings dialog; 05: Live Image Information dialog.
+precedence; 04: Transactional Settings dialog; 05: Live Image Information dialog; 07: Extract the
+viewing-surface module; 08: Report finite animation completion truthfully; 09: Express native
+primary actions; 10: Align the presentation contract and vocabulary; 11: Add Quit to application
+command surfaces.
 
 **Status:** ready-for-human
 
@@ -36,3 +39,5 @@ precedence; 04: Transactional Settings dialog; 05: Live Image Information dialog
 - The acceptance criteria remain unchecked until the documented interactive runs are recorded on
   representative GNOME, KDE, and macOS desktops. Offscreen Qt containment and the local smoke timing
   are automated supporting evidence, not native-desktop or representative timing evidence.
+- Review remediation tickets 07–11 must resolve before the native matrix is authoritative; their
+  changes affect the surfaces and behavior this ticket validates.
