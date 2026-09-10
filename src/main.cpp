@@ -447,6 +447,23 @@ class ViewerWindow final : public QWidget
         return entries.join(QLatin1Char('|')).toUtf8();
     }
 
+    QByteArray quitActionState() const
+    {
+        QAction *quitAction = commandAction("applicationQuitAction");
+        bool fileMenuContainsAction = false;
+        for (const QAction *menuAction : applicationMenuBar_->actions()) {
+            if (menuAction->text() == tr("File") && menuAction->menu() != nullptr) {
+                fileMenuContainsAction = menuAction->menu()->actions().contains(quitAction);
+                break;
+            }
+        }
+        const bool shared = contextMenu_->actions().contains(quitAction) && fileMenuContainsAction;
+        return QByteArray(shared ? "shared" : "duplicated") + '|' +
+               (quitAction->menuRole() == QAction::QuitRole ? "standard-role" : "custom-role") +
+               '|' + (quitAction->shortcut() == QKeySequence::Quit ? "standard-shortcut"
+                                                                   : "custom-shortcut");
+    }
+
     QByteArray focusState() const
     {
         if (QApplication::activePopupWidget() != nullptr) {
@@ -851,6 +868,12 @@ class ViewerWindow final : public QWidget
 
     void addCommandSurfaces(QAction *settingsAction, QVBoxLayout *windowLayout)
     {
+        auto *quitAction = new QAction(tr("Quit Flick"), this);
+        quitAction->setObjectName(QStringLiteral("applicationQuitAction"));
+        quitAction->setMenuRole(QAction::QuitRole);
+        quitAction->setShortcut(QKeySequence::Quit);
+        QObject::connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+
         const QList<QAction *> viewCommands{
             commandAction("viewerFitAction"), commandAction("viewerActualSizeAction"),
             commandAction("viewerZoomInAction"), commandAction("viewerZoomOutAction"),
@@ -877,6 +900,8 @@ class ViewerWindow final : public QWidget
         }
         contextMenu_->addSeparator();
         contextMenu_->addAction(settingsAction);
+        contextMenu_->addSeparator();
+        contextMenu_->addAction(quitAction);
         QObject::connect(contextMenu_, &QMenu::aboutToHide, this, [this] {
             QTimer::singleShot(0, this, [this] { restoreViewingFocus(); });
         });
@@ -891,6 +916,7 @@ class ViewerWindow final : public QWidget
         QMenu *fileMenu = applicationMenuBar_->addMenu(tr("File"));
         fileMenu->addAction(commandAction("viewerOpenAction"));
         fileMenu->addAction(settingsAction);
+        fileMenu->addAction(quitAction);
 #if defined(Q_OS_MACOS)
         settingsAction->setMenuRole(QAction::PreferencesRole);
 #endif
@@ -911,12 +937,6 @@ class ViewerWindow final : public QWidget
                                    .arg(QCoreApplication::applicationVersion()));
             setFocus();
         });
-#if defined(Q_OS_MACOS)
-        auto *quitAction = fileMenu->addAction(tr("Quit Flick"));
-        quitAction->setMenuRole(QAction::QuitRole);
-        quitAction->setShortcut(QKeySequence::Quit);
-        QObject::connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
-#endif
     }
 
     void loadSettings()
@@ -2229,6 +2249,13 @@ int main(int argc, char *argv[])
             } else if (input.startsWith("CommandAvailability")) {
                 fprintf(stdout, "%s\n", window.commandAvailability().constData());
                 fflush(stdout);
+                return;
+            } else if (input.startsWith("QuitActionState")) {
+                fprintf(stdout, "%s\n", window.quitActionState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("TriggerQuit")) {
+                window.findChild<QAction *>(QStringLiteral("applicationQuitAction"))->trigger();
                 return;
             } else if (input.startsWith("FocusState")) {
                 fprintf(stdout, "%s\n", window.focusState().constData());

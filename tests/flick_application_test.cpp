@@ -69,6 +69,7 @@ private slots:
     void informationDialogReportsNaturalAnimationCompletion();
     void copiesPathAndRenderedImageAndExposesContextCommands();
     void exposesGroupedCommandSurfacesWithoutNavigationRows();
+    void quitCommandIsSharedAndExitsCleanly();
     void contextMenuStaysReachableNearEveryScreenEdge();
     void restoresViewingFocusAndAppliesEscapePrecedence();
     void revealsCurrentFileAndReportsExternalActionFailures();
@@ -1842,7 +1843,7 @@ void FlickApplicationTest::exposesGroupedCommandSurfacesWithoutNavigationRows()
              QByteArrayLiteral("Open Image|---|Fit to Window|Actual Size|Zoom In|Zoom Out|Toggle "
                                "Fullscreen|---|Rotate Left|Rotate Right|Pause or Resume "
                                "Animation|Information|---|Copy Image|Copy Path|Show in File "
-                               "Manager|---|Settings"));
+                               "Manager|---|Settings|---|Quit Flick"));
     QVERIFY(!context.contains("Previous Image"));
     QVERIFY(!context.contains("Next Image"));
 
@@ -1855,6 +1856,28 @@ void FlickApplicationTest::exposesGroupedCommandSurfacesWithoutNavigationRows()
     QVERIFY(application.contains("Settings"));
     QVERIFY(sendQueryAndWaitForReply(flick, QByteArrayLiteral("CommandAvailability"))
                 .contains("Fit to Window=enabled"));
+}
+
+void FlickApplicationTest::quitCommandIsSharedAndExitsCleanly()
+{
+    RunningFlick flick;
+    start(flick);
+    waitForScreenshot(flick);
+
+    const QByteArray context =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ContextMenuStructure"));
+    QVERIFY(context.endsWith("Settings|---|Quit Flick"));
+
+    const QByteArray application =
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuStructure"));
+    QVERIFY(application.contains("File[Open Image|Settings|Quit Flick]"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("QuitActionState")),
+             QByteArrayLiteral("shared|standard-role|standard-shortcut"));
+
+    sendCommand(flick, QByteArrayLiteral("TriggerQuit"));
+    QTRY_COMPARE_WITH_TIMEOUT(flick.process.state(), QProcess::NotRunning, 2000);
+    QCOMPARE(flick.process.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(flick.process.exitCode(), 0);
 }
 
 void FlickApplicationTest::contextMenuStaysReachableNearEveryScreenEdge()
