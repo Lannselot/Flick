@@ -489,6 +489,11 @@ class ViewerWindow final : public QWidget
         return settingsStateBytes(readStoredSettings());
     }
 
+    QByteArray settingsFileName() const
+    {
+        return QSettings().fileName().toUtf8();
+    }
+
     QByteArray settingsDialogStructure() const
     {
         if (settingsDialog_ == nullptr) {
@@ -2056,6 +2061,13 @@ void scheduleCapture(ViewerWindow &window, QObject &context, const bool waitUnti
 
 int main(int argc, char *argv[])
 {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    const QString testSettingsRoot = qEnvironmentVariable("FLICK_TEST_SETTINGS_ROOT");
+    if (!testSettingsRoot.isEmpty()) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, testSettingsRoot);
+    }
+#endif
     FlickApplication application(argc, argv);
     QAccessible::installFactory(flickAccessibleInterface);
     QApplication::setApplicationName(QStringLiteral("Flick"));
@@ -2117,6 +2129,10 @@ int main(int argc, char *argv[])
                 return;
             } else if (input.startsWith("StoredSettingsState")) {
                 fprintf(stdout, "%s\n", window.storedSettingsState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("SettingsFileName")) {
+                fprintf(stdout, "%s\n", window.settingsFileName().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsDialogStructure")) {

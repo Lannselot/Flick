@@ -57,6 +57,7 @@ private slots:
     void wheelActionDefaultsToNavigationWithCtrlZoom();
     void wheelActionCanSwitchToZoomWithCtrlNavigation();
     void settingsApplyImmediatelyAndPersistAcrossLaunches();
+    void testHarnessUsesExplicitSettingsRoot();
     void settingsDialogPreviewsCommitsRollsBackAndResets();
     void temporarilyRotatesCurrentViewAndResetsOnNavigation();
     void togglesFullscreenFromKeyboardAndPointer();
@@ -96,7 +97,7 @@ private:
                const QString &pickerSelection = {}, int decodeDelayMilliseconds = 0,
                int cacheBudgetBytes = 0, const QString &configHome = {},
                qint64 largeAllocationLimitBytes = 0, const QString &scaleFactor = {},
-               bool darkChrome = false);
+               bool darkChrome = false, const QString &settingsRoot = {});
     QImage waitForScreenshot(const RunningFlick &flick);
     QImage pressKeyAndWaitForScreenshot(RunningFlick &flick, Qt::Key key);
     void sendCommand(RunningFlick &flick, const QByteArray &command);
@@ -147,7 +148,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
                                  const int cacheBudgetBytes,
                                  const QString &configHome,
                                  const qint64 largeAllocationLimitBytes,
-                                 const QString &scaleFactor, const bool darkChrome)
+                                 const QString &scaleFactor, const bool darkChrome,
+                                 const QString &settingsRoot)
 {
     QVERIFY(flick.environment.isValid());
     const QString config = configHome.isEmpty()
@@ -176,6 +178,8 @@ void FlickApplicationTest::start(RunningFlick &flick, const QStringList &argumen
     environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), flick.screenshotPath);
     environment.insert(QStringLiteral("FLICK_TEST_FILE_PICKER_SELECTION"), pickerSelection);
     environment.insert(QStringLiteral("FLICK_TEST_REDUCED_MOTION"), QStringLiteral("1"));
+    environment.insert(QStringLiteral("FLICK_TEST_SETTINGS_ROOT"),
+                       settingsRoot.isEmpty() ? config : settingsRoot);
     if (!scaleFactor.isEmpty()) {
         environment.insert(QStringLiteral("QT_SCALE_FACTOR"), scaleFactor);
     }
@@ -1092,10 +1096,14 @@ void FlickApplicationTest::appliesInitialScalingAndKeyboardZoomModes()
 
     RunningFlick largeFlick;
     start(largeFlick, {large});
-    QCOMPARE(colorBounds(waitForScreenshot(largeFlick), color).size(), QSize(478, 296));
+    const QImage initialLarge = waitForScreenshot(largeFlick);
+    const QList<QByteArray> viewport =
+        sendQueryAndWaitForReply(largeFlick, QByteArrayLiteral("ViewState")).split(',');
+    const QSize visibleViewport(viewport.at(3).toInt(), viewport.at(4).toInt());
+    QCOMPARE(colorBounds(initialLarge, color).size(), visibleViewport);
     const QImage largeActual =
         sendCommandAndWaitForScreenshot(largeFlick, QByteArrayLiteral("ActualSize"));
-    QCOMPARE(colorBounds(largeActual, color).size(), QSize(478, 296));
+    QCOMPARE(colorBounds(largeActual, color).size(), visibleViewport);
 }
 
 void FlickApplicationTest::highZoomRemainsResponsiveWithoutAllocatingTheFullScaledImage()
@@ -1327,6 +1335,20 @@ void FlickApplicationTest::settingsApplyImmediatelyAndPersistAcrossLaunches()
     waitForScreenshot(withoutRestoration);
     QVERIFY(sendQueryAndWaitForReply(withoutRestoration, QByteArrayLiteral("WindowGeometry")) !=
             QByteArrayLiteral("640x400"));
+}
+
+void FlickApplicationTest::testHarnessUsesExplicitSettingsRoot()
+{
+    QTemporaryDir settings;
+    QVERIFY(settings.isValid());
+
+    RunningFlick flick;
+    start(flick, {}, {}, 0, 0, {}, 0, {}, false, settings.path());
+    waitForScreenshot(flick);
+
+    const QString settingsFile = QString::fromUtf8(
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("SettingsFileName")));
+    QVERIFY2(settingsFile.startsWith(settings.path()), qPrintable(settingsFile));
 }
 
 void FlickApplicationTest::settingsDialogPreviewsCommitsRollsBackAndResets()

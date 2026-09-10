@@ -40,6 +40,8 @@ public:
                            environment_.filePath(QStringLiteral("state")));
         environment.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
         environment.insert(QStringLiteral("FLICK_TEST_SCREENSHOT_FILE"), screenshot_);
+        environment.insert(QStringLiteral("FLICK_TEST_SETTINGS_ROOT"),
+                           environment_.filePath(QStringLiteral("config")));
         if (cacheBudget > 0) {
             environment.insert(QStringLiteral("FLICK_TEST_CACHE_BUDGET_BYTES"),
                                QString::number(cacheBudget));
