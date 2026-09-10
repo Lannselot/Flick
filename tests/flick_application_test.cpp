@@ -41,7 +41,7 @@ private slots:
     void decodingRemainsResponsiveAndStaleResultsAreIgnored();
     void prefetchedImagesAreReusedAndCacheIsBounded();
     void decodeFailureExplainsTheProblemAndKeepsNavigationUsable();
-    void technicalDetailsExpandAndF5RecoversAfterRepair();
+    void technicalDetailsRemainSecondaryAndEnterRecoversAfterRepair();
     void extremeDimensionsRequireConfirmationBeforeBackgroundDecode();
     void rendersSupportedStaticFormatsAndTransparency();
     void honorsEmbeddedProfilesAndDefaultsUntaggedImagesToSrgb();
@@ -766,7 +766,7 @@ void FlickApplicationTest::decodeFailureExplainsTheProblemAndKeepsNavigationUsab
     QVERIFY(QFile::setPermissions(deniedPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
 }
 
-void FlickApplicationTest::technicalDetailsExpandAndF5RecoversAfterRepair()
+void FlickApplicationTest::technicalDetailsRemainSecondaryAndEnterRecoversAfterRepair()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -785,17 +785,26 @@ void FlickApplicationTest::technicalDetailsExpandAndF5RecoversAfterRepair()
     RunningFlick flick;
     start(flick, {path});
     waitForScreenshot(flick);
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PrimaryActionState")),
+             QByteArrayLiteral("Retry:default|Details:secondary"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ErrorState")).split('|').at(3),
              QByteArrayLiteral("details-hidden"));
-    sendCommand(flick, QByteArrayLiteral("ToggleDetails"));
+    sendCommand(flick, QByteArrayLiteral("FocusDetails"));
+    sendCommand(flick, QByteArrayLiteral("Enter"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PrimaryActionState")),
+             QByteArrayLiteral("Retry:default|Details:secondary"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ErrorState")).split('|').at(3),
              QByteArrayLiteral("details-visible"));
+    QCOMPARE(sendQueryAndWaitForReply(flick,
+                                      QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
+             QByteArrayLiteral("1"));
 
     QVERIFY(fixture.open(QIODevice::WriteOnly | QIODevice::Truncate));
     QCOMPARE(fixture.write(validBytes), validBytes.size());
     fixture.close();
+    sendCommand(flick, QByteArrayLiteral("FocusViewingSurface"));
     const QImage recovered =
-        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Refresh"));
+        sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Enter"));
     QVERIFY(containsColor(recovered, recoveredColor));
     QCOMPARE(sendQueryAndWaitForReply(flick,
                                       QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
@@ -832,6 +841,8 @@ void FlickApplicationTest::extremeDimensionsRequireConfirmationBeforeBackgroundD
         sendQueryAndWaitForReply(rejected, QByteArrayLiteral("PresentationState"));
     QVERIFY(warningPresentation.contains("20000 × 10000"));
     QVERIFY(warningPresentation.endsWith("Open anyway|Skip"));
+    QCOMPARE(sendQueryAndWaitForReply(rejected, QByteArrayLiteral("PrimaryActionState")),
+             QByteArrayLiteral("Open anyway:default|Skip:secondary"));
     sendCommandAndWaitForScreenshot(rejected, QByteArrayLiteral("Escape"));
     QVERIFY(sendQueryAndWaitForReply(rejected, QByteArrayLiteral("PresentationState"))
                 .startsWith("empty|"));
@@ -842,16 +853,27 @@ void FlickApplicationTest::extremeDimensionsRequireConfirmationBeforeBackgroundD
     RunningFlick approved;
     start(approved, {path}, {}, 700);
     waitForScreenshot(approved);
+    sendCommand(approved, QByteArrayLiteral("FocusSkip"));
+    sendCommandAndWaitForScreenshot(approved, QByteArrayLiteral("Enter"));
+    QVERIFY(sendQueryAndWaitForReply(approved, QByteArrayLiteral("PresentationState"))
+                .startsWith("empty|"));
+    QCOMPARE(sendQueryAndWaitForReply(approved,
+                                      QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
+             QByteArrayLiteral("1"));
+    sendCommandAndWaitForScreenshot(approved, QByteArrayLiteral("Drop:") + path.toUtf8());
+    QCOMPARE(sendQueryAndWaitForReply(approved, QByteArrayLiteral("PrimaryActionState")),
+             QByteArrayLiteral("Open anyway:default|Skip:secondary"));
+    sendCommand(approved, QByteArrayLiteral("FocusViewingSurface"));
     QElapsedTimer responsiveness;
     responsiveness.start();
-    sendCommand(approved, QByteArrayLiteral("ApproveLarge"));
+    sendCommand(approved, QByteArrayLiteral("Enter"));
     QCOMPARE(sendQueryAndWaitForReply(approved, QByteArrayLiteral("PresentationState")),
              QByteArrayLiteral("loading|extreme.bmp|indicator-hidden"));
     sendCommandAndWaitForScreenshot(approved, QByteArrayLiteral("Capture"));
     QVERIFY2(responsiveness.elapsed() < 500, "approved large-image decode blocked the UI thread");
     QTRY_COMPARE_WITH_TIMEOUT(
         sendQueryAndWaitForReply(approved, QByteArrayLiteral("DecodeCount:") + path.toUtf8()),
-        QByteArrayLiteral("2"), 5000);
+        QByteArrayLiteral("3"), 5000);
 
     const QString animatedPath =
         writeFixture(QStringLiteral("animated.gif.base64"), QStringLiteral("allocation.gif"));

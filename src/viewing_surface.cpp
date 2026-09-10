@@ -131,17 +131,17 @@ ViewingSurface::ViewingSurface(QWidget *displayedContent, Commands commands,
   largeImageExplanation_->setAccessibleName(tr("Large image warning"));
   auto *warningButtons = new QWidget;
   auto *warningButtonLayout = new QHBoxLayout(warningButtons);
-  auto *approveLarge = new QPushButton(tr("Open anyway"));
-  approveLarge->setObjectName(QStringLiteral("approveLargeImage"));
-  approveLarge->setAccessibleDescription(
+  largeImageApproveButton_ = new QPushButton(tr("Open anyway"));
+  largeImageApproveButton_->setObjectName(QStringLiteral("approveLargeImage"));
+  largeImageApproveButton_->setAccessibleDescription(
       tr("Allows decoding of the current exceptionally large image."));
   auto *rejectLarge = new QPushButton(tr("Skip"));
   rejectLarge->setObjectName(QStringLiteral("rejectLargeImage"));
   rejectLarge->setAccessibleDescription(
       tr("Cancels decoding of the current exceptionally large image."));
-  warningButtonLayout->addWidget(approveLarge);
+  warningButtonLayout->addWidget(largeImageApproveButton_);
   warningButtonLayout->addWidget(rejectLarge);
-  QObject::connect(approveLarge, &QPushButton::clicked, this,
+  QObject::connect(largeImageApproveButton_, &QPushButton::clicked, this,
                    commands_.approveLargeImage);
   QObject::connect(rejectLarge, &QPushButton::clicked, this,
                    commands_.rejectLargeImage);
@@ -245,17 +245,30 @@ void ViewingSurface::showError(const QString &filename,
                              : details);
   errorDetailsButton_->setChecked(false);
   showPresentation(errorState_, State::Error);
+  errorRetryButton_->setDefault(true);
 }
 void ViewingSurface::showLargeImageConfirmation(const QString &message) {
   loadingTimer_->stop();
   largeImageExplanation_->setText(message);
   showPresentation(largeImageWarning_, State::LargeImageConfirmation);
+  largeImageApproveButton_->setDefault(true);
 }
 void ViewingSurface::dismissLargeImageConfirmation() {
   largeImageWarning_->hide();
 }
 bool ViewingSurface::isLargeImageConfirmationVisible() const {
   return state_ == State::LargeImageConfirmation;
+}
+bool ViewingSurface::activatePrimaryAction() {
+  if (state_ == State::Error) {
+    errorRetryButton_->click();
+    return true;
+  }
+  if (state_ == State::LargeImageConfirmation) {
+    largeImageApproveButton_->click();
+    return true;
+  }
+  return false;
 }
 
 void ViewingSurface::showStatus() {
@@ -404,6 +417,20 @@ QByteArray ViewingSurface::errorDescription() const {
          errorExplanation_->text().toUtf8() + '|' +
          errorDetails_->text().toUtf8() + '|' +
          (errorDetails_->isVisible() ? "details-visible" : "details-hidden");
+}
+QByteArray ViewingSurface::primaryActionDescription() const {
+  if (state_ == State::Error) {
+    return errorRetryButton_->text().toUtf8() +
+           (errorRetryButton_->isDefault() ? ":default|" : ":secondary|") +
+           errorDetailsButton_->text().toUtf8() + ":secondary";
+  }
+  if (state_ == State::LargeImageConfirmation) {
+    return largeImageApproveButton_->text().toUtf8() +
+           (largeImageApproveButton_->isDefault() ? ":default|"
+                                                  : ":secondary|") +
+           QByteArrayLiteral("Skip:secondary");
+  }
+  return {};
 }
 
 void ViewingSurface::resizeEvent(QResizeEvent *event) {

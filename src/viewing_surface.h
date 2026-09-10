@@ -47,6 +47,7 @@ public:
   void showLargeImageConfirmation(const QString &message);
   void dismissLargeImageConfirmation();
   bool isLargeImageConfirmationVisible() const;
+  bool activatePrimaryAction();
 
   void showStatus();
   void showFeedback(const QString &message);
@@ -68,6 +69,7 @@ public:
   State state() const;
   QByteArray presentationDescription() const;
   QByteArray errorDescription() const;
+  QByteArray primaryActionDescription() const;
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
@@ -92,6 +94,7 @@ private:
   QLabel *errorNavigationHint_ = nullptr;
   QWidget *largeImageWarning_ = nullptr;
   QLabel *largeImageExplanation_ = nullptr;
+  QPushButton *largeImageApproveButton_ = nullptr;
   QLabel *statusDisplay_ = nullptr;
   QTimer *statusTimer_ = nullptr;
   QGraphicsOpacityEffect *statusOpacity_ = nullptr;

@@ -357,7 +357,7 @@ class ViewerWindow final : public QWidget
     void focusViewingSurfaceForTest()
     {
         activateWindow();
-        viewport_->setFocus(Qt::OtherFocusReason);
+        setFocus(Qt::OtherFocusReason);
     }
 
     QByteArray feedbackState() const
@@ -368,6 +368,11 @@ class ViewerWindow final : public QWidget
     QByteArray errorState() const
     {
         return surface_->errorDescription();
+    }
+
+    QByteArray primaryActionState() const
+    {
+        return surface_->primaryActionDescription();
     }
 
     QByteArray largeImageState() const
@@ -662,6 +667,16 @@ class ViewerWindow final : public QWidget
         if (event->key() == Qt::Key_F5) {
             retryCurrentImage();
             return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            if (auto *focusedAction =
+                    qobject_cast<QAbstractButton *>(QApplication::focusWidget())) {
+                focusedAction->click();
+                return;
+            }
+            if (surface_->activatePrimaryAction()) {
+                return;
+            }
         }
         if (event->key() == Qt::Key_Escape &&
             surface_->state() == ViewingSurface::State::LargeImageConfirmation) {
@@ -2207,6 +2222,17 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "%s\n", window.largeImageState().constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("PrimaryActionState")) {
+                fprintf(stdout, "%s\n", window.primaryActionState().constData());
+                fflush(stdout);
+                return;
+            } else if (input.startsWith("FocusDetails")) {
+                window.findChild<QToolButton *>()->setFocus(Qt::OtherFocusReason);
+                return;
+            } else if (input.startsWith("FocusSkip")) {
+                window.findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))
+                    ->setFocus(Qt::OtherFocusReason);
+                return;
             } else if (input.startsWith("ToggleDetails")) {
                 if (auto *button = window.findChild<QToolButton *>()) {
                     button->toggle();
@@ -2344,6 +2370,7 @@ int main(int argc, char *argv[])
                                   : input.startsWith("RotateRight") ? Qt::Key_R
                                   : input.startsWith("F11")         ? Qt::Key_F11
                                   : input.startsWith("Refresh")     ? Qt::Key_F5
+                                  : input.startsWith("Enter")       ? Qt::Key_Return
                                   : input.startsWith("Escape")      ? Qt::Key_Escape
                                   : input.startsWith("Left")        ? Qt::Key_Left
                                   : input.startsWith("Space")       ? Qt::Key_Space
@@ -2354,7 +2381,9 @@ int main(int argc, char *argv[])
                                 : shift                ? Qt::ShiftModifier
                                                        : Qt::NoModifier);
                 QWidget *target = QApplication::activePopupWidget();
-                if (target == nullptr) {
+                if (input.startsWith("Enter")) {
+                    target = &window;
+                } else if (target == nullptr) {
                     target = QApplication::focusWidget();
                 }
                 QApplication::sendEvent(target != nullptr ? target : &window, &event);
