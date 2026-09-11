@@ -2,6 +2,7 @@
 
 #include "viewing_surface.h"
 
+#include <QAbstractButton>
 #include <QFileInfo>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
@@ -17,27 +18,24 @@
 #include <QVBoxLayout>
 
 namespace {
-constexpr int LoadingIndicatorDelayMilliseconds = 120;
 constexpr int StatusVisibilityMilliseconds = 2000;
 constexpr int FeedbackVisibilityMilliseconds = 1500;
 
-int loadingIndicatorDelayMilliseconds() {
-#ifdef FLICK_ENABLE_TEST_HARNESS
-  const int testDelay = qEnvironmentVariableIntValue(
-      "FLICK_TEST_LOADING_INDICATOR_DELAY_MS");
-  if (testDelay > 0) {
-    return testDelay;
-  }
-#endif
-  return LoadingIndicatorDelayMilliseconds;
-}
 constexpr int StatusFadeMilliseconds = 160;
 } // namespace
 
 ViewingSurface::ViewingSurface(QWidget *displayedContent, Commands commands,
-                               QWidget *parent)
-    : QWidget(parent), commands_(std::move(commands)),
-      displayedContent_(displayedContent) {
+                               QWidget *parent, Configuration configuration)
+    : QWidget(parent), commands_(std::move(commands)), displayedContent_(displayedContent)
+#ifdef FLICK_ENABLE_TEST_HARNESS
+      ,
+      loadingIndicatorDelayMilliseconds_(configuration.loadingIndicatorDelayMilliseconds),
+      reducedMotion_(configuration.reducedMotion)
+#endif
+{
+#ifndef FLICK_ENABLE_TEST_HARNESS
+  Q_UNUSED(configuration)
+#endif
   setObjectName(QStringLiteral("viewingSurface"));
   setAutoFillBackground(true);
   QPalette surfacePalette = palette();
@@ -146,15 +144,14 @@ ViewingSurface::ViewingSurface(QWidget *displayedContent, Commands commands,
   largeImageApproveButton_->setObjectName(QStringLiteral("approveLargeImage"));
   largeImageApproveButton_->setAccessibleDescription(
       tr("Allows decoding of the current exceptionally large image."));
-  auto *rejectLarge = new QPushButton(tr("Skip"));
-  rejectLarge->setObjectName(QStringLiteral("rejectLargeImage"));
-  rejectLarge->setAccessibleDescription(
+  largeImageRejectButton_ = new QPushButton(tr("Skip"));
+  largeImageRejectButton_->setAccessibleDescription(
       tr("Cancels decoding of the current exceptionally large image."));
   warningButtonLayout->addWidget(largeImageApproveButton_);
-  warningButtonLayout->addWidget(rejectLarge);
+  warningButtonLayout->addWidget(largeImageRejectButton_);
   QObject::connect(largeImageApproveButton_, &QPushButton::clicked, this,
                    commands_.approveLargeImage);
-  QObject::connect(rejectLarge, &QPushButton::clicked, this,
+  QObject::connect(largeImageRejectButton_, &QPushButton::clicked, this,
                    commands_.rejectLargeImage);
   warningLayout->addWidget(largeImageExplanation_);
   warningLayout->addWidget(warningButtons, 0, Qt::AlignHCenter);
@@ -240,7 +237,11 @@ void ViewingSurface::beginLoading(const QString &filename) {
   loadingIndicator_->hide();
   loadingFilename_->hide();
   showPresentation(loadingState_, State::Loading);
-  loadingTimer_->start(loadingIndicatorDelayMilliseconds());
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  loadingTimer_->start(loadingIndicatorDelayMilliseconds_);
+#else
+  loadingTimer_->start(120);
+#endif
 }
 void ViewingSurface::showDisplayed() {
   loadingTimer_->stop();
@@ -357,7 +358,10 @@ void ViewingSurface::hideStatus() {
   statusTimer_->stop();
   if (!statusDisplay_->isVisible())
     return;
-  if (qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION") ||
+  if (
+#ifdef FLICK_ENABLE_TEST_HARNESS
+      reducedMotion_ ||
+#endif
       style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, this) <=
           0) {
     statusDisplay_->hide();
@@ -395,88 +399,50 @@ bool ViewingSurface::dropTargetVisible() const {
 QString ViewingSurface::dropTargetText() const { return dropLabel_->text(); }
 ViewingSurface::State ViewingSurface::state() const { return state_; }
 
-QByteArray ViewingSurface::presentationDescription() const {
-  if (dropTargetVisible())
-    return QByteArrayLiteral("drop|") + dropTargetText().toUtf8();
-  switch (state_) {
-  case State::Empty:
-    return QByteArrayLiteral(
-        "empty|Open an image|Choose file|or drop it here|← → Browse · Wheel "
-        "Navigate · Right-click Commands");
-  case State::Loading:
-    return QByteArrayLiteral("loading|") + loadingFilename_->text().toUtf8() +
-           '|' +
-           (loadingIndicator_->isVisible()
-                ? QByteArrayLiteral("indicator-visible")
-                : QByteArrayLiteral("indicator-hidden"));
-  case State::Displayed:
-    return QByteArrayLiteral("displayed");
-  case State::Error:
-    return QByteArrayLiteral("error|") + errorExplanation_->text().toUtf8() +
-           '|' + errorRetryButton_->text().toUtf8() + '|' +
-           errorDetailsButton_->text().toUtf8() + '|' +
-           errorNavigationHint_->text().toUtf8();
-  case State::LargeImageConfirmation:
-    return QByteArrayLiteral("large-image|") +
-           largeImageExplanation_->text().toUtf8() +
-           QByteArrayLiteral("|Open anyway|Skip");
-  }
-  return {};
-}
-QByteArray ViewingSurface::errorDescription() const {
-  return QByteArray(errorState_->isVisible() ? "visible" : "hidden") + '|' +
-         errorExplanation_->text().toUtf8() + '|' +
-         errorDetails_->text().toUtf8() + '|' +
-         (errorDetails_->isVisible() ? "details-visible" : "details-hidden");
-}
-QByteArray ViewingSurface::primaryActionDescription() const {
-  if (state_ == State::Error) {
-    return errorRetryButton_->text().toUtf8() +
-           (errorRetryButton_->isDefault() ? ":default|" : ":secondary|") +
-           errorDetailsButton_->text().toUtf8() + ":secondary";
-  }
-  if (state_ == State::LargeImageConfirmation) {
-    return largeImageApproveButton_->text().toUtf8() +
-           (largeImageApproveButton_->isDefault() ? ":default|"
-                                                  : ":secondary|") +
-           QByteArrayLiteral("Skip:secondary");
-  }
-  return {};
-}
 #ifdef FLICK_ENABLE_TEST_HARNESS
-QByteArray ViewingSurface::motionContractDescription() const {
-  const auto transition = [](State state) {
-    return usesOptionalOpacity(state) ? QByteArrayLiteral("optional-opacity")
-                                      : QByteArrayLiteral("immediate");
-  };
-  return QByteArrayLiteral("empty=") + transition(State::Empty) +
-         QByteArrayLiteral("|loading=") + transition(State::Loading) +
-         QByteArrayLiteral("|displayed=") + transition(State::Displayed) +
-         QByteArrayLiteral("|error=") + transition(State::Error) +
-         QByteArrayLiteral("|large-image=") +
-         transition(State::LargeImageConfirmation) +
-         QByteArrayLiteral("|reduced-motion=immediate");
-}
-QByteArray ViewingSurface::activeTransitionDescription() const {
-  const auto name = [this] {
-    switch (state_) {
-    case State::Empty:
-      return QByteArrayLiteral("empty");
-    case State::Loading:
-      return QByteArrayLiteral("loading");
-    case State::Displayed:
-      return QByteArrayLiteral("displayed");
-    case State::Error:
-      return QByteArrayLiteral("error");
-    case State::LargeImageConfirmation:
-      return QByteArrayLiteral("large-image");
-    }
-    return QByteArray{};
-  }();
+ViewingSurface::PresentationSnapshot ViewingSurface::presentationSnapshot() const {
   QWidget *current = stack_->currentWidget();
-  return name + (current != nullptr && current->graphicsEffect() != nullptr
-                     ? QByteArrayLiteral("|opacity")
-                     : QByteArrayLiteral("|immediate"));
+  const bool error = state_ == State::Error;
+  const bool large = state_ == State::LargeImageConfirmation;
+  return {state_,
+          dropTargetVisible(),
+          dropTargetText(),
+          loadingFilename_->text(),
+          loadingIndicator_->isVisible(),
+          errorExplanation_->text(),
+          errorDetails_->text(),
+          errorDetails_->isVisible(),
+          errorRetryButton_->text(),
+          errorDetailsButton_->text(),
+          errorNavigationHint_->text(),
+          largeImageExplanation_->text(),
+          error ? errorRetryButton_->text() : large ? largeImageApproveButton_->text() : QString{},
+          error ? errorRetryButton_->isDefault() : large && largeImageApproveButton_->isDefault(),
+          error ? errorDetailsButton_->text() : large ? tr("Skip") : QString{},
+          usesOptionalOpacity(state_),
+          current != nullptr && current->graphicsEffect() != nullptr};
+}
+
+void ViewingSurface::activateActionForTest(const ActionRole role) {
+  actionForTest(role)->click();
+}
+
+void ViewingSurface::focusActionForTest(const ActionRole role) {
+  actionForTest(role)->setFocus(Qt::OtherFocusReason);
+}
+
+QAbstractButton *ViewingSurface::actionForTest(const ActionRole role) const {
+  if (role == ActionRole::Details) {
+    return errorDetailsButton_;
+  }
+  if (state_ == State::Error) {
+    return role == ActionRole::Primary
+               ? static_cast<QAbstractButton *>(errorRetryButton_)
+               : errorDetailsButton_;
+  }
+  return role == ActionRole::Primary
+             ? static_cast<QAbstractButton *>(largeImageApproveButton_)
+             : largeImageRejectButton_;
 }
 #endif
 
@@ -499,7 +465,9 @@ void ViewingSurface::showPresentation(QWidget *widget, State state) {
   state_ = state;
   stack_->setCurrentWidget(widget);
   if (!usesOptionalOpacity(state) ||
-      qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION") ||
+#ifdef FLICK_ENABLE_TEST_HARNESS
+      reducedMotion_ ||
+#endif
       style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, this) <=
           0 ||
       !isVisible())

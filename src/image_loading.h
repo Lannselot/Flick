@@ -45,6 +45,9 @@ struct DecodeRequest
     QString path;
     bool exceptionalDimensionsApproved = false;
     qint64 allocationLimitBytes = 1024LL * 1024 * 1024;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    int delayMilliseconds = 0;
+#endif
 };
 
 DecodeOutcome decode(const DecodeRequest &request);

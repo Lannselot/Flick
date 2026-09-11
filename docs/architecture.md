@@ -1,6 +1,6 @@
 # Архитектура Flick
 
-Документ описывает текущую архитектуру приложения. `ViewerWindow` в `src/main.cpp`
+Документ описывает текущую архитектуру приложения. `ViewerWindow` в `src/viewer_window.cpp`
 координирует представление, а жизненным циклом загрузки изображений и browsing sequence
 владеют отдельные глубокие модули.
 
@@ -23,9 +23,10 @@ flowchart TB
         Animation[Animation timer<br/>frame delays and loops]
         Canvas[ImageCanvas<br/>clipped painting]
         Surface[ViewingSurface<br/>presentation states and feedback]
+        Information[ImageInformation::Dialog<br/>formatting and live dialog lifecycle]
+        SettingsEditor[Settings::Editor<br/>editing transaction and persistence]
         Viewport[QScrollArea]
         Feedback[Empty state и<br/>временные сообщения]
-        Settings[QSettings]
         Platform[PlatformServices<br/>профиль дисплея и reveal]
 
         Main --> Window
@@ -43,10 +44,12 @@ flowchart TB
         Animation --> Canvas
         Window --> Canvas
         Window --> Surface
+        Window -->|typed snapshot| Information
+        Window -->|opening/default values<br/>and preview operation| SettingsEditor
         Canvas --> Surface
         Surface --> Viewport
         Surface --> Feedback
-        Window --> Settings
+        SettingsEditor --> Settings[QSettings]
         Window --> Platform
     end
 
@@ -80,6 +83,17 @@ drop feedback и связанных с ними виджетов, таймеро
 переходы `showEmpty`, `beginLoading`, `showDisplayed`, `showError` и
 `showLargeImageConfirmation`, а также операции transient feedback. Модуль получает только
 контекст текущего статуса и команды пользователя; inventory Qt-виджетов наружу не публикуется.
+
+`Settings::Editor` владеет деревом виджетов диалога Settings, редактируемыми значениями,
+снимком состояния при открытии, выбором цвета, транзакциями Apply/Cancel/Reset и сохранением
+принятых значений в платформенном `QSettings`. Его seam принимает типизированные начальные и
+стандартные значения и одну операцию live preview. `ViewerWindow` применяет preview к навигации,
+внешнему виду, кешу и поведению окна, но не знает об отдельных контролах диалога.
+
+`ImageInformation::Dialog` владеет форматированием фактов, немодальным Qt-диалогом, его
+доступностью, обновлением и жизненным циклом. `ViewerWindow` передаёт ему один типизированный
+`ImageInformation::Snapshot`, собранный из current image, browsing sequence и view state; диалог
+не получает указатели на окно, loader, sequence или viewing surface.
 
 Для последовательности, открытой из одного файла, `QFileSystemWatcher` следит
 за содержащим его каталогом. При изменении каталога `ViewerWindow` передаёт наблюдение
@@ -144,17 +158,21 @@ sequenceDiagram
 `QImageReader::setAutoTransform(true)` применяет EXIF-ориентацию ко всем
 декодированным кадрам.
 
-При показе нового изображения `ViewerWindow` выбирает масштаб `min(100%,
-fit-to-viewport)`. Масштаб хранится отдельно от декодированных кадров, поэтому
-анимация сохраняет выбранный пользователем вид. По умолчанию колесо мыши
+`ViewerWindow` хранит политику масштаба отдельно от его числового значения.
+При показе нового изображения выбирается `Auto`: масштаб равен `min(100%,
+fit-to-viewport)` и пересчитывается после окончательной раскладки viewport при
+изменении размера окна и переходах в полноэкранный режим. Явная команда Fit
+выбирает отслеживающую viewport политику `Fit` без ограничения в 100%, а Actual
+Size и ручное масштабирование выбирают `Fixed` и сохраняют числовой масштаб при
+последующих изменениях окна. Масштаб хранится отдельно от декодированных кадров,
+поэтому анимация сохраняет выбранный пользователем вид. По умолчанию колесо мыши
 управляет последовательностью, а с зажатым `Ctrl` — масштабом; эти действия
 можно поменять местами через контекстное меню области просмотра. Выбранное
 основное действие сохраняется в `QSettings`. При масштабировании позиции полос
 прокрутки пересчитываются так, чтобы точка изображения под указателем оставалась
 на месте; перетаскивание левой кнопкой и `Shift` со стрелками изменяют те же
 позиции. Обычные стрелки влево и вправо по-прежнему управляют
-последовательностью и при смене изображения сбрасывают вид к начальному
-масштабу.
+последовательностью и при смене изображения возвращают политику `Auto`.
 
 `ImageCanvas` хранит исходный `QImage`, но не создаёт полный увеличенный
 `QPixmap`. В `paintEvent` он сопоставляет видимую часть холста с соответствующим
@@ -248,8 +266,14 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    CTest[CTest] --> Test[flick_application_test]
-    Test -->|QProcess| App[Отдельный процесс Flick]
+    CTest[CTest] --> Browsing[application.browsing]
+    CTest --> Presentation[application.presentation]
+    CTest --> Settings[application.settings]
+    CTest --> Commands[application.commands]
+    CTest --> Animation[application.animation]
+    CTest --> Platform[application.platform]
+    Browsing & Presentation & Settings & Commands & Animation & Platform --> Support[application_process_test_support]
+    Support -->|QProcess| App[Отдельный процесс Flick]
 
     subgraph Isolated[Изолированное временное окружение]
         XDG[XDG config / data / cache / state / runtime]
@@ -257,17 +281,27 @@ flowchart LR
         Screenshot[window.png]
     end
 
-    Test --> Fixtures
+    Support --> Fixtures
     Fixtures --> App
-    Test -->|Left, Right, F11, mouse,<br/>Drop, Capture через stdin| Harness[Test harness]
-    Harness --> App
+    Support -->|Left, Right, F11, mouse,<br/>Drop, Capture через stdin| Adapter[ProcessTestAdapter]
+    Adapter -->|ViewerWindowTestControl| App
     App -->|window.grab и save| Screenshot
-    Screenshot -->|загрузка как QImage| Test
-    Test --> Assertions[Проверка размера,<br/>цветов и состояния процесса]
+    Screenshot -->|загрузка как QImage| Support
+    Support --> Assertions[Проверка размера,<br/>цветов и состояния процесса]
     XDG --> App
 ```
 
-Тесты работают через границу настоящего приложения: запускают бинарник в
-режиме `offscreen`, имитируют пользовательские события и проверяют итоговый
-снимок окна. Тестовый канал команд и создание снимков включаются только при
-определении `FLICK_ENABLE_TEST_HARNESS`.
+Шесть независимо запускаемых application suites разделены по возможностям: browsing,
+presentation, settings, commands, animation и platform. Общий
+`application_process_test_support` владеет запуском процесса, изолированным XDG-окружением,
+fixtures, транспортом команд, снимками и общими проверками. Инвентарь переноса сценариев
+зафиксирован в `tests/application-process-suite-inventory.md`.
+
+Тесты работают через границу настоящего приложения: запускают
+`flick_test_driver` в режиме `offscreen`, имитируют пользовательские события и
+проверяют итоговый снимок окна. Отдельный `ProcessTestAdapter` разбирает stdin и
+пересекает единственный тестовый seam `ViewerWindowTestControl`; production
+entry point и executable этот adapter не компилируют и не линкуют. Адаптер владеет
+сериализацией ответов, парсингом тестовых значений, синтетическим вводом и детерминированными
+test controls; окно оставляет за seam только координационные состояние и операции, которых
+нельзя наблюдать через обычные пользовательские команды.

@@ -41,3 +41,7 @@ command surfaces.
   are automated supporting evidence, not native-desktop or representative timing evidence.
 - Review remediation tickets 07–11 must resolve before the native matrix is authoritative; their
   changes affect the surfaces and behavior this ticket validates.
+- Responsive-fit process coverage now verifies resize and fullscreen transitions for Auto, Fit,
+  Actual Size, and manual zoom against the final laid-out viewport. Native compositor-driven
+  maximize and restore remain to be confirmed and recorded here on GNOME, KDE, and macOS; this
+  automated evidence does not resolve the ticket.

@@ -29,21 +29,27 @@ endif()
 
 qt_standard_project_setup()
 
-function(add_flick_executable target)
+function(add_flick_executable target entrypoint)
     set(options)
     if(APPLE AND target STREQUAL "flick")
         list(APPEND options MACOSX_BUNDLE)
     endif()
     qt_add_executable(${target} ${options}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/${entrypoint}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewer_window.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewer_window.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/browsing_sequence.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/browsing_sequence.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/image_loading.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/image_loading.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/image_information.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/image_information.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/settings_editor.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/settings_editor.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/viewing_surface.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/viewing_surface.h
     )
@@ -65,7 +71,7 @@ function(add_flick_executable target)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endfunction()
 
-add_flick_executable(flick)
+add_flick_executable(flick src/main.cpp)
 if(APPLE)
     set_source_files_properties(packaging/macos/Flick.icns PROPERTIES
         MACOSX_PACKAGE_LOCATION Resources
@@ -83,7 +89,12 @@ if(APPLE)
     )
 endif()
 if(BUILD_TESTING)
-    add_flick_executable(flick_test_driver)
+    add_flick_executable(flick_test_driver src/test_driver_main.cpp)
+    target_sources(flick_test_driver PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/process_test_adapter.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/process_test_adapter.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewer_window_test_control.h
+    )
     target_compile_definitions(flick_test_driver PRIVATE FLICK_ENABLE_TEST_HARNESS)
 endif()
 

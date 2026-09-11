@@ -7,6 +7,7 @@
 #include <functional>
 
 class QLabel;
+class QAbstractButton;
 class QGraphicsOpacityEffect;
 class QPropertyAnimation;
 class QPushButton;
@@ -17,6 +18,7 @@ class QToolButton;
 class ViewingSurface final : public QWidget {
 public:
   enum class State { Empty, Loading, Displayed, Error, LargeImageConfirmation };
+  enum class ActionRole { Primary, Secondary, Details };
 
   struct StatusContext {
     QString filename;
@@ -37,8 +39,37 @@ public:
     std::function<void()> hidePointer;
   };
 
+  struct Configuration {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    int loadingIndicatorDelayMilliseconds = 120;
+    bool reducedMotion = false;
+#endif
+  };
+
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  struct PresentationSnapshot {
+    State state = State::Empty;
+    bool dropTargetVisible = false;
+    QString dropTargetText;
+    QString loadingFilename;
+    bool loadingIndicatorVisible = false;
+    QString errorExplanation;
+    QString errorDetails;
+    bool errorDetailsVisible = false;
+    QString errorRetryText;
+    QString errorDetailsActionText;
+    QString errorNavigationHint;
+    QString largeImageExplanation;
+    QString primaryActionText;
+    bool primaryActionIsDefault = false;
+    QString secondaryActionText;
+    bool optionalOpacity = false;
+    bool activeOpacityEffect = false;
+  };
+#endif
+
   explicit ViewingSurface(QWidget *displayedContent, Commands commands,
-                          QWidget *parent = nullptr);
+                          QWidget *parent, Configuration configuration);
 
   void showEmpty();
   void beginLoading(const QString &filename);
@@ -67,18 +98,19 @@ public:
   QString dropTargetText() const;
 
   State state() const;
-  QByteArray presentationDescription() const;
-  QByteArray errorDescription() const;
-  QByteArray primaryActionDescription() const;
 #ifdef FLICK_ENABLE_TEST_HARNESS
-  QByteArray motionContractDescription() const;
-  QByteArray activeTransitionDescription() const;
+  PresentationSnapshot presentationSnapshot() const;
+  void activateActionForTest(ActionRole role);
+  void focusActionForTest(ActionRole role);
 #endif
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
 
 private:
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  QAbstractButton *actionForTest(ActionRole role) const;
+#endif
   void showPresentation(QWidget *widget, State state);
   static bool usesOptionalOpacity(State state);
   void positionStatus();
@@ -100,6 +132,7 @@ private:
   QWidget *largeImageWarning_ = nullptr;
   QLabel *largeImageExplanation_ = nullptr;
   QPushButton *largeImageApproveButton_ = nullptr;
+  QPushButton *largeImageRejectButton_ = nullptr;
   QLabel *statusDisplay_ = nullptr;
   QTimer *statusTimer_ = nullptr;
   QGraphicsOpacityEffect *statusOpacity_ = nullptr;
@@ -111,5 +144,9 @@ private:
   bool statusEnabled_ = true;
   bool browsingTeachingComplete_ = false;
   bool fullscreenTeachingComplete_ = false;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  int loadingIndicatorDelayMilliseconds_ = 120;
+  bool reducedMotion_ = false;
+#endif
   QString pendingFeedback_;
 };

@@ -74,9 +74,9 @@ cmake --build build/manual-test
 ctest --test-dir build/manual-test --output-on-failure
 ```
 
-`BUILD_TESTING=ON` creates `flick_test_driver`, which exposes the private test
-harness. Never package that executable as the production application. The
-release builder rejects an instrumented `flick` binary as an additional guard.
+`BUILD_TESTING=ON` creates `flick_test_driver`, whose dedicated entry point links
+the process test adapter. The production `flick` target does not compile or link
+that adapter. Never package the driver as the production application.
 
 All tests must pass before beginning the manual checklist. If a test fails,
 rerun only that test verbosely with:
