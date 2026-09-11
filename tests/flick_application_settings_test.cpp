@@ -38,9 +38,10 @@ void FlickApplicationSettingsTest::closingFullscreenRestoresTheNormalWindowOnRel
     waitForScreenshot(firstRun);
     sendCommand(firstRun, QByteArrayLiteral("ApplySettings:navigate:#202020:1:32:1"));
     sendCommand(firstRun, QByteArrayLiteral("Resize:720:480"));
-    sendCommandAndWaitForScreenshot(firstRun, QByteArrayLiteral("F11"));
-    QCOMPARE(sendQueryAndWaitForReply(firstRun, QByteArrayLiteral("UiState")).split('|').at(0),
-             QByteArrayLiteral("fullscreen"));
+    sendCommand(firstRun, QByteArrayLiteral("F11"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        sendQueryAndWaitForReply(firstRun, QByteArrayLiteral("UiState")).split('|').at(0),
+        QByteArrayLiteral("fullscreen"), 3000);
     sendCommand(firstRun, QByteArrayLiteral("Close"));
     QTRY_COMPARE_WITH_TIMEOUT(firstRun.process.state(), QProcess::NotRunning, 2000);
 
