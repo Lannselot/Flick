@@ -36,6 +36,8 @@ function(add_flick_executable target)
     endif()
     qt_add_executable(${target} ${options}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewer_window.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/viewer_window.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/flick_application.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/browsing_sequence.cpp
