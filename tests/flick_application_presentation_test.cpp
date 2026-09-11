@@ -665,7 +665,7 @@ void FlickApplicationPresentationTest::informationDialogStaysLiveWhileBrowsing()
              QByteArrayLiteral("viewing-surface"));
 
     const QString animated =
-        writeFixture(QStringLiteral("animated.gif.base64"), QStringLiteral("animated.gif"));
+        writeFixture(QStringLiteral("animated.webp.base64"), QStringLiteral("animated.webp"));
     QVERIFY(!animated.isEmpty());
     RunningFlick animation;
     start(animation, {animated}, {}, 0, 0, {}, 0, QStringLiteral("2"));
