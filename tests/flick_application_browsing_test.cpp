@@ -10,6 +10,7 @@
 #include <QRect>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QtEndian>
 #include "application_process_test_support.h"
 
 class FlickApplicationBrowsingTest final : public QObject, protected ApplicationProcessTest
