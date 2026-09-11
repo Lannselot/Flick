@@ -4,28 +4,24 @@
 #include "flick_application.h"
 #include "image_loading.h"
 #include "platform_services.h"
+#include "settings_editor.h"
 #include "viewing_surface.h"
 
 #include "browsing_sequence.h"
-#include <QAbstractButton>
 #include <QAccessible>
 #include <QAccessibleWidget>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
-#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
-#include <QColorDialog>
 #include <QColorSpace>
-#include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QCursor>
 #include <QDateTime>
 #include <QDialog>
-#include <QDialogButtonBox>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -33,10 +29,8 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
-#include <QFormLayout>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
-#include <QGroupBox>
 #include <QHash>
 #include <QKeyEvent>
 #include <QLabel>
@@ -55,7 +49,6 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
-#include <QSpinBox>
 #include <QStackedLayout>
 #include <QStyle>
 #include <QTimer>
@@ -80,15 +73,8 @@
 #endif
 
 namespace {
-constexpr qsizetype DefaultCacheBudgetBytes = 512LL * 1024 * 1024;
 constexpr int KeyboardPanStep = 40;
 constexpr qint64 LargeImageAllocationLimit = 1024LL * 1024 * 1024;
-
-enum class WheelAction
-{
-    Navigate,
-    Zoom
-};
 
 enum class AnimationPlayback
 {
@@ -98,6 +84,7 @@ enum class AnimationPlayback
 };
 
 using ImageLoading::LoadedImage;
+using Settings::WheelAction;
 
 QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
 {
@@ -245,6 +232,7 @@ class ViewerWindowImplementation final : public QWidget
         QObject::connect(directoryWatcher_, &QFileSystemWatcher::directoryChanged, this,
                          [this] { refreshDirectorySequence(); });
 
+        settingsEditor_ = std::make_unique<Settings::Editor>(*this);
         loadSettings();
 
         imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
@@ -290,13 +278,7 @@ class ViewerWindowImplementation final : public QWidget
 
     void persistWindowGeometry()
     {
-        QSettings settings;
-        if (restoreWindowGeometry_) {
-            settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
-        } else {
-            settings.remove(QStringLiteral("window/geometry"));
-        }
-        settings.sync();
+        Settings::Editor::persistWindowGeometry(saveGeometry(), restoreWindowGeometry_);
     }
 
     void openExternalFile(const QString &path)
@@ -389,7 +371,7 @@ class ViewerWindowImplementation final : public QWidget
 
     QByteArray backgroundPickerTitle() const
     {
-        return viewingSurfaceBackgroundPickerTitle().toUtf8();
+        return Settings::Editor::backgroundPickerTitle();
     }
 #endif
 
@@ -482,72 +464,32 @@ class ViewerWindowImplementation final : public QWidget
 
     QByteArray settingsState() const
     {
-        return settingsStateBytes(currentSettings());
+        return Settings::Editor::describe(currentSettings());
     }
 
     QByteArray storedSettingsState() const
     {
-        return settingsStateBytes(readStoredSettings());
+        return Settings::Editor::describe(Settings::Editor::readAccepted());
     }
 
     QByteArray settingsFileName() const
     {
-        return QSettings().fileName().toUtf8();
+        return Settings::Editor::settingsFileName();
     }
 
     QByteArray settingsDialogStructure() const
     {
-        if (settingsDialog_ == nullptr) {
-            return QByteArrayLiteral("closed");
-        }
-        const QList<QGroupBox *> groups = settingsDialog_->findChildren<QGroupBox *>();
-        QStringList descriptions;
-        for (const QGroupBox *group : groups) {
-            QStringList controls;
-            for (const QWidget *child :
-                 group->findChildren<QWidget *>(QString{}, Qt::FindDirectChildrenOnly)) {
-                if (!child->accessibleName().isEmpty()) {
-                    controls.append(child->accessibleName());
-                }
-            }
-            descriptions.append(group->title() + QLatin1Char('[') +
-                                controls.join(QLatin1Char('|')) + QLatin1Char(']'));
-        }
-        const QStringList buttonLabels{settingsButtons_->button(QDialogButtonBox::Reset)->text(),
-                                       settingsButtons_->button(QDialogButtonBox::Cancel)->text(),
-                                       settingsButtons_->button(QDialogButtonBox::Apply)->text()};
-        return (descriptions + buttonLabels).join(QLatin1Char('|')).toUtf8();
+        return settingsEditor_->dialogStructure();
     }
 
     QByteArray settingsDialogGeometry() const
     {
-        return settingsDialog_ == nullptr ? QByteArrayLiteral("0x0")
-                                          : QByteArray::number(settingsDialog_->width()) + 'x' +
-                                                QByteArray::number(settingsDialog_->height());
+        return settingsEditor_->dialogGeometry();
     }
 
     QByteArray settingsDialogFocusOrder() const
     {
-        if (settingsDialog_ == nullptr || settingsWheel_ == nullptr) {
-            return {};
-        }
-        QStringList names;
-        const QWidget *widget = settingsWheel_;
-        do {
-            if (widget->focusPolicy() != Qt::NoFocus) {
-                QString name = widget->accessibleName();
-                if (name.isEmpty()) {
-                    if (const auto *button = qobject_cast<const QAbstractButton *>(widget)) {
-                        name = button->text();
-                    }
-                }
-                if (!name.isEmpty()) {
-                    names.append(name);
-                }
-            }
-            widget = widget->nextInFocusChain();
-        } while (widget != settingsWheel_ && widget != nullptr);
-        return names.join(QLatin1Char('|')).toUtf8();
+        return settingsEditor_->dialogFocusOrder();
     }
 
     QByteArray accessibilityState() const
@@ -582,7 +524,7 @@ class ViewerWindowImplementation final : public QWidget
 
     void applyTestSettings(const QStringList &values)
     {
-        if (const auto settings = parseTestSettings(values)) {
+        if (const auto settings = Settings::Editor::parseTestValues(values)) {
             applySettings(settings->wheelAction, settings->background, settings->statusVisible,
                           settings->cacheBudgetBytes, settings->restoreWindowGeometry);
         }
@@ -590,27 +532,19 @@ class ViewerWindowImplementation final : public QWidget
 
     void previewTestSettings(const QStringList &values)
     {
-        const auto settings = parseTestSettings(values);
-        if (settingsDialog_ == nullptr || !settings) {
-            return;
+        if (const auto settings = Settings::Editor::parseTestValues(values)) {
+            settingsEditor_->setTestValues(*settings);
         }
-        setSettingsControls(*settings);
     }
 
     void resetTestSettings()
     {
-        if (settingsButtons_ != nullptr) {
-            settingsButtons_->button(QDialogButtonBox::Reset)->click();
-        }
+        settingsEditor_->resetForTest();
     }
 
     void finishTestSettings(const bool apply)
     {
-        if (settingsButtons_ == nullptr) {
-            return;
-        }
-        settingsButtons_->button(apply ? QDialogButtonBox::Apply : QDialogButtonBox::Cancel)
-            ->click();
+        settingsEditor_->finishForTest(apply);
     }
 
     void failExternalActionsForTest()
@@ -826,20 +760,6 @@ class ViewerWindowImplementation final : public QWidget
     }
 
   private:
-    QString viewingSurfaceBackgroundPickerTitle() const
-    {
-        return tr("Viewing Surface Background");
-    }
-
-    struct SettingsValues
-    {
-        WheelAction wheelAction = WheelAction::Navigate;
-        QColor background{QStringLiteral("#181A1B")};
-        bool statusVisible = true;
-        qsizetype cacheBudgetBytes = DefaultCacheBudgetBytes;
-        bool restoreWindowGeometry = false;
-    };
-
     template <typename MenuContainer> static QString menuStructure(const MenuContainer *container)
     {
         if (container == nullptr) {
@@ -947,7 +867,7 @@ class ViewerWindowImplementation final : public QWidget
 
     void loadSettings()
     {
-        SettingsValues values = readStoredSettings();
+        Settings::Values values = Settings::Editor::readAccepted();
 #ifdef FLICK_ENABLE_TEST_HARNESS
         const qint64 testBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
         if (testBudget > 0) {
@@ -955,7 +875,7 @@ class ViewerWindowImplementation final : public QWidget
         }
 #endif
         if (values.cacheBudgetBytes <= 0) {
-            values.cacheBudgetBytes = DefaultCacheBudgetBytes;
+            values.cacheBudgetBytes = Settings::Editor::defaults().cacheBudgetBytes;
         }
         wheelAction_ = values.wheelAction;
         viewportBackground_ = values.background;
@@ -968,7 +888,7 @@ class ViewerWindowImplementation final : public QWidget
             ->setChecked(wheelAction_ == WheelAction::Zoom);
         applyViewportBackground();
         if (restoreWindowGeometry_) {
-            restoreGeometry(QSettings().value(QStringLiteral("window/geometry")).toByteArray());
+            restoreGeometry(Settings::Editor::readWindowGeometry());
         }
     }
 
@@ -988,72 +908,20 @@ class ViewerWindowImplementation final : public QWidget
     {
         previewSettings(
             {wheelAction, background, statusVisible, cacheBudgetBytes, restoreWindowGeometry});
-        persistSettings(currentSettings());
+        Settings::Editor::persistAccepted(currentSettings());
     }
 
-    SettingsValues currentSettings() const
+    Settings::Values currentSettings() const
     {
         return {wheelAction_, viewportBackground_, surface_->statusEnabled(), imageLoader_.cacheBudget(),
                 restoreWindowGeometry_};
     }
 
-    static SettingsValues defaultSettings()
-    {
-        return {};
-    }
-
-    static SettingsValues readStoredSettings()
-    {
-        QSettings settings;
-        SettingsValues values;
-        values.wheelAction =
-            settings.value(QStringLiteral("view/wheelAction"), QStringLiteral("navigate"))
-                        .toString() == QStringLiteral("zoom")
-                ? WheelAction::Zoom
-                : WheelAction::Navigate;
-        values.background = QColor(
-            settings.value(QStringLiteral("view/background"), values.background.name()).toString());
-        if (!values.background.isValid()) {
-            values.background = defaultSettings().background;
-        }
-        values.statusVisible =
-            settings.value(QStringLiteral("view/statusVisible"), values.statusVisible).toBool();
-        values.cacheBudgetBytes =
-            settings.value(QStringLiteral("cache/budgetBytes"), values.cacheBudgetBytes)
-                .toLongLong();
-        values.restoreWindowGeometry =
-            settings.value(QStringLiteral("window/restoreGeometry"), values.restoreWindowGeometry)
-                .toBool();
-        return values;
-    }
-
-    static QByteArray settingsStateBytes(const SettingsValues &values)
-    {
-        return QByteArray(values.wheelAction == WheelAction::Zoom ? "zoom" : "navigate") + '|' +
-               values.background.name().toUtf8() + '|' +
-               (values.statusVisible ? "visible" : "hidden") + '|' +
-               QByteArray::number(values.cacheBudgetBytes) + '|' +
-               (values.restoreWindowGeometry ? "restore" : "forget");
-    }
-
-#ifdef FLICK_ENABLE_TEST_HARNESS
-    static std::optional<SettingsValues> parseTestSettings(const QStringList &fields)
-    {
-        if (fields.size() != 5) {
-            return std::nullopt;
-        }
-        return SettingsValues{fields.at(0) == QStringLiteral("zoom") ? WheelAction::Zoom
-                                                                     : WheelAction::Navigate,
-                              QColor(fields.at(1)), fields.at(2).toInt() != 0,
-                              fields.at(3).toLongLong() * 1024 * 1024, fields.at(4).toInt() != 0};
-    }
-#endif
-
-    void previewSettings(const SettingsValues &values)
+    void previewSettings(const Settings::Values &values)
     {
         setWheelAction(values.wheelAction, false);
         viewportBackground_ =
-            values.background.isValid() ? values.background : defaultSettings().background;
+            values.background.isValid() ? values.background : Settings::Editor::defaults().background;
         surface_->setStatusVisible(values.statusVisible);
         imageLoader_.setCacheBudget(std::max<qsizetype>(1024 * 1024, values.cacheBudgetBytes));
         restoreWindowGeometry_ = values.restoreWindowGeometry;
@@ -1069,140 +937,10 @@ class ViewerWindowImplementation final : public QWidget
         }
     }
 
-    void persistSettings(const SettingsValues &values)
-    {
-        QSettings settings;
-        settings.setValue(QStringLiteral("view/wheelAction"),
-                          values.wheelAction == WheelAction::Zoom ? QStringLiteral("zoom")
-                                                                  : QStringLiteral("navigate"));
-        settings.setValue(QStringLiteral("view/background"), values.background.name());
-        settings.setValue(QStringLiteral("view/statusVisible"), values.statusVisible);
-        settings.setValue(QStringLiteral("cache/budgetBytes"), values.cacheBudgetBytes);
-        settings.setValue(QStringLiteral("window/restoreGeometry"), values.restoreWindowGeometry);
-        if (!values.restoreWindowGeometry) {
-            settings.remove(QStringLiteral("window/geometry"));
-        }
-        settings.sync();
-    }
-
     void showSettings()
     {
-        if (settingsDialog_ != nullptr) {
-            settingsDialog_->raise();
-            settingsDialog_->activateWindow();
-            return;
-        }
-        settingsOpeningValues_ = currentSettings();
-        settingsDialog_ = new QDialog(this);
-        settingsDialog_->setAttribute(Qt::WA_DeleteOnClose);
-        settingsDialog_->setWindowTitle(tr("Settings"));
-        settingsDialog_->setWindowModality(Qt::WindowModal);
-        settingsDialog_->setMinimumWidth(380);
-        auto *layout = new QVBoxLayout(settingsDialog_);
-        layout->setContentsMargins(12, 8, 12, 8);
-        layout->setSpacing(4);
-
-        auto *navigation = new QGroupBox(tr("Navigation"), settingsDialog_);
-        auto *navigationLayout = new QFormLayout(navigation);
-        navigationLayout->setContentsMargins(8, 12, 8, 6);
-        navigationLayout->setVerticalSpacing(4);
-        settingsWheel_ = new QComboBox(navigation);
-        settingsWheel_->setAccessibleName(tr("Mouse wheel action"));
-        settingsWheel_->addItem(tr("Navigate images"), QStringLiteral("navigate"));
-        settingsWheel_->addItem(tr("Zoom image"), QStringLiteral("zoom"));
-        navigationLayout->addRow(tr("Mouse wheel:"), settingsWheel_);
-        layout->addWidget(navigation);
-
-        auto *appearance = new QGroupBox(tr("Appearance"), settingsDialog_);
-        auto *appearanceLayout = new QFormLayout(appearance);
-        appearanceLayout->setContentsMargins(8, 12, 8, 6);
-        appearanceLayout->setVerticalSpacing(4);
-        settingsBackground_ = new QPushButton(appearance);
-        settingsBackground_->setAccessibleName(tr("Viewing surface background"));
-        settingsStatus_ = new QCheckBox(tr("Show status overlay"), appearance);
-        settingsStatus_->setAccessibleName(tr("Show status overlay"));
-        appearanceLayout->addRow(tr("Viewing surface background:"), settingsBackground_);
-        appearanceLayout->addRow(QString{}, settingsStatus_);
-        layout->addWidget(appearance);
-
-        auto *performance = new QGroupBox(tr("Performance & Window"), settingsDialog_);
-        auto *performanceLayout = new QFormLayout(performance);
-        performanceLayout->setContentsMargins(8, 12, 8, 6);
-        performanceLayout->setVerticalSpacing(4);
-        settingsCache_ = new QSpinBox(performance);
-        settingsCache_->setAccessibleName(tr("Decoded cache budget"));
-        settingsCache_->setRange(1, 16384);
-        settingsCache_->setSuffix(tr(" MB"));
-        settingsGeometry_ = new QCheckBox(tr("Restore window size and position"), performance);
-        settingsGeometry_->setAccessibleName(tr("Restore window size and position"));
-        performanceLayout->addRow(tr("Decoded cache budget:"), settingsCache_);
-        performanceLayout->addRow(QString{}, settingsGeometry_);
-        layout->addWidget(performance);
-
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Reset | QDialogButtonBox::Cancel |
-                                                 QDialogButtonBox::Apply,
-                                             settingsDialog_);
-        settingsButtons_ = buttons;
-        buttons->button(QDialogButtonBox::Reset)->setText(tr("Reset Defaults"));
-        layout->addWidget(buttons);
-
-        const auto previewControls = [this] { previewSettings(settingsControlsValues()); };
-        QObject::connect(settingsWheel_, &QComboBox::currentIndexChanged, settingsDialog_,
-                         previewControls);
-        QObject::connect(settingsStatus_, &QCheckBox::toggled, settingsDialog_, previewControls);
-        QObject::connect(settingsCache_, &QSpinBox::valueChanged, settingsDialog_, previewControls);
-        QObject::connect(settingsGeometry_, &QCheckBox::toggled, settingsDialog_, previewControls);
-        QObject::connect(settingsBackground_, &QPushButton::clicked, settingsDialog_, [this] {
-            const QColor selected = QColorDialog::getColor(
-                settingsDialogBackground_, settingsDialog_, viewingSurfaceBackgroundPickerTitle());
-            if (selected.isValid()) {
-                settingsDialogBackground_ = selected;
-                settingsBackground_->setText(selected.name());
-                previewSettings(settingsControlsValues());
-            }
-        });
-        QObject::connect(buttons->button(QDialogButtonBox::Reset), &QPushButton::clicked,
-                         settingsDialog_, [this] { setSettingsControls(defaultSettings()); });
-        QObject::connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked,
-                         settingsDialog_, [this] {
-                             persistSettings(currentSettings());
-                             settingsDialog_->accept();
-                         });
-        QObject::connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
-        QObject::connect(settingsDialog_, &QDialog::rejected, this,
-                         [this] { previewSettings(settingsOpeningValues_); });
-        QObject::connect(settingsDialog_, &QDialog::finished, this, [this] {
-            settingsDialog_ = nullptr;
-            settingsWheel_ = nullptr;
-            settingsBackground_ = nullptr;
-            settingsStatus_ = nullptr;
-            settingsCache_ = nullptr;
-            settingsGeometry_ = nullptr;
-            settingsButtons_ = nullptr;
-            restoreViewingFocus();
-        });
-        setSettingsControls(settingsOpeningValues_);
-        settingsDialog_->open();
-    }
-
-    SettingsValues settingsControlsValues() const
-    {
-        return {settingsWheel_->currentData() == QStringLiteral("zoom") ? WheelAction::Zoom
-                                                                        : WheelAction::Navigate,
-                settingsDialogBackground_, settingsStatus_->isChecked(),
-                static_cast<qsizetype>(settingsCache_->value()) * 1024 * 1024,
-                settingsGeometry_->isChecked()};
-    }
-
-    void setSettingsControls(const SettingsValues &values)
-    {
-        settingsDialogBackground_ = values.background;
-        settingsWheel_->setCurrentIndex(values.wheelAction == WheelAction::Zoom ? 1 : 0);
-        settingsBackground_->setText(values.background.name());
-        settingsStatus_->setChecked(values.statusVisible);
-        settingsCache_->setValue(static_cast<int>(values.cacheBudgetBytes / (1024 * 1024)));
-        settingsGeometry_->setChecked(values.restoreWindowGeometry);
-        previewSettings(values);
+        settingsEditor_->open(currentSettings(), Settings::Editor::defaults(),
+                              [this](const Settings::Values &values) { previewSettings(values); });
     }
 
     void addImageActions()
@@ -1438,9 +1176,7 @@ class ViewerWindowImplementation final : public QWidget
     {
         wheelAction_ = action;
         if (persist) {
-            QSettings().setValue(QStringLiteral("view/wheelAction"),
-                                 action == WheelAction::Zoom ? QStringLiteral("zoom")
-                                                             : QStringLiteral("navigate"));
+            Settings::Editor::persistWheelAction(action);
         }
     }
 
@@ -2014,15 +1750,7 @@ class ViewerWindowImplementation final : public QWidget
     QLabel *informationFacts_ = nullptr;
     QMenuBar *applicationMenuBar_ = nullptr;
     QMenu *contextMenu_ = nullptr;
-    QDialog *settingsDialog_ = nullptr;
-    QComboBox *settingsWheel_ = nullptr;
-    QPushButton *settingsBackground_ = nullptr;
-    QCheckBox *settingsStatus_ = nullptr;
-    QSpinBox *settingsCache_ = nullptr;
-    QCheckBox *settingsGeometry_ = nullptr;
-    QDialogButtonBox *settingsButtons_ = nullptr;
-    SettingsValues settingsOpeningValues_;
-    QColor settingsDialogBackground_{QStringLiteral("#181A1B")};
+    std::unique_ptr<Settings::Editor> settingsEditor_;
 #ifdef FLICK_ENABLE_TEST_HARNESS
     QHash<QString, int> decodeCounts_;
     bool failExternalActionsForTest_ = false;

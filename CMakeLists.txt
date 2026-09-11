@@ -46,6 +46,8 @@ function(add_flick_executable target)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/image_loading.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_services.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/settings_editor.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/settings_editor.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/viewing_surface.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/viewing_surface.h
     )
