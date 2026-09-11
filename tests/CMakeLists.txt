@@ -92,7 +92,23 @@ add_test(
         "-DPRODUCTION_SOURCES=$<JOIN:$<TARGET_PROPERTY:flick,SOURCES>,;>"
         "-DDRIVER_SOURCES=$<JOIN:$<TARGET_PROPERTY:flick_test_driver,SOURCES>,;>"
         -DTEST_ADAPTER_SOURCE=${PROJECT_SOURCE_DIR}/src/process_test_adapter.cpp
+        -DPRODUCTION_BINARY=$<TARGET_FILE:flick>
+        -DNM_EXECUTABLE=${CMAKE_NM}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/production_target_sources_test.cmake
+)
+
+add_test(
+    NAME flick.architecture-ownership
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/architecture_ownership_test.cmake
+)
+
+add_test(
+    NAME flick.ux-validation-gate
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/ux_validation_gate_test.cmake
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

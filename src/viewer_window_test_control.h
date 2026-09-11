@@ -2,11 +2,12 @@
 
 #pragma once
 
+#include "settings_editor.h"
+
 #include <QByteArray>
 #include <QPoint>
 #include <QRect>
 #include <QString>
-#include <QStringList>
 
 class ViewerWindow;
 class QEvent;
@@ -47,7 +48,6 @@ public:
     QByteArray primaryActionState() const;
     QByteArray presentationMotionContract() const;
     QByteArray activePresentationTransition() const;
-    QByteArray backgroundPickerTitle() const;
     QByteArray largeImageState() const;
     QByteArray contextActions() const;
     QByteArray contextMenuStructure() const;
@@ -58,8 +58,6 @@ public:
     QByteArray focusState() const;
     QByteArray accessibilityState() const;
     QByteArray settingsState() const;
-    QByteArray storedSettingsState() const;
-    QByteArray settingsFileName() const;
     QByteArray settingsDialogStructure() const;
     QByteArray settingsDialogGeometry() const;
     QByteArray settingsDialogFocusOrder() const;
@@ -67,8 +65,8 @@ public:
     QByteArray presentationState() const;
 
     void persistWindowGeometry();
-    void applyTestSettings(const QStringList &values);
-    void previewTestSettings(const QStringList &values);
+    void applySettings(const Settings::Values &values);
+    void setSettingsDialogValues(const Settings::Values &values);
     void resetTestSettings();
     void finishTestSettings(bool accepted);
     void displayConfigurationChanged();

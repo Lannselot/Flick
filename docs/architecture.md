@@ -23,9 +23,10 @@ flowchart TB
         Animation[Animation timer<br/>frame delays and loops]
         Canvas[ImageCanvas<br/>clipped painting]
         Surface[ViewingSurface<br/>presentation states and feedback]
+        Information[ImageInformation::Dialog<br/>formatting and live dialog lifecycle]
+        SettingsEditor[Settings::Editor<br/>editing transaction and persistence]
         Viewport[QScrollArea]
         Feedback[Empty state и<br/>временные сообщения]
-        Settings[QSettings]
         Platform[PlatformServices<br/>профиль дисплея и reveal]
 
         Main --> Window
@@ -43,10 +44,12 @@ flowchart TB
         Animation --> Canvas
         Window --> Canvas
         Window --> Surface
+        Window -->|typed snapshot| Information
+        Window -->|opening/default values<br/>and preview operation| SettingsEditor
         Canvas --> Surface
         Surface --> Viewport
         Surface --> Feedback
-        Window --> Settings
+        SettingsEditor --> Settings[QSettings]
         Window --> Platform
     end
 
@@ -86,6 +89,11 @@ drop feedback и связанных с ними виджетов, таймеро
 принятых значений в платформенном `QSettings`. Его seam принимает типизированные начальные и
 стандартные значения и одну операцию live preview. `ViewerWindow` применяет preview к навигации,
 внешнему виду, кешу и поведению окна, но не знает об отдельных контролах диалога.
+
+`ImageInformation::Dialog` владеет форматированием фактов, немодальным Qt-диалогом, его
+доступностью, обновлением и жизненным циклом. `ViewerWindow` передаёт ему один типизированный
+`ImageInformation::Snapshot`, собранный из current image, browsing sequence и view state; диалог
+не получает указатели на окно, loader, sequence или viewing surface.
 
 Для последовательности, открытой из одного файла, `QFileSystemWatcher` следит
 за содержащим его каталогом. При изменении каталога `ViewerWindow` передаёт наблюдение
@@ -271,8 +279,8 @@ flowchart LR
 
     Support --> Fixtures
     Fixtures --> App
-    Support -->|Left, Right, F11, mouse,<br/>Drop, Capture через stdin| Harness[Test harness]
-    Harness --> App
+    Support -->|Left, Right, F11, mouse,<br/>Drop, Capture через stdin| Adapter[ProcessTestAdapter]
+    Adapter -->|ViewerWindowTestControl| App
     App -->|window.grab и save| Screenshot
     Screenshot -->|загрузка как QImage| Support
     Support --> Assertions[Проверка размера,<br/>цветов и состояния процесса]
@@ -287,6 +295,9 @@ fixtures, транспортом команд, снимками и общими 
 
 Тесты работают через границу настоящего приложения: запускают
 `flick_test_driver` в режиме `offscreen`, имитируют пользовательские события и
-проверяют итоговый снимок окна. Отдельный process test adapter разбирает stdin и
+проверяют итоговый снимок окна. Отдельный `ProcessTestAdapter` разбирает stdin и
 пересекает единственный тестовый seam `ViewerWindowTestControl`; production
-entry point и executable этот adapter не компилируют и не линкуют.
+entry point и executable этот adapter не компилируют и не линкуют. Адаптер владеет
+сериализацией ответов, парсингом тестовых значений, синтетическим вводом и детерминированными
+test controls; окно оставляет за seam только координационные состояние и операции, которых
+нельзя наблюдать через обычные пользовательские команды.

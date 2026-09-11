@@ -5,7 +5,6 @@
 #include "viewer_window_test_control.h"
 #endif
 
-#include "flick_application.h"
 #include "image_information.h"
 #include "image_loading.h"
 #include "platform_services.h"
@@ -34,7 +33,9 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QGraphicsOpacityEffect>
+#ifdef FLICK_ENABLE_TEST_HARNESS
 #include <QHash>
+#endif
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
@@ -366,10 +367,6 @@ class ViewerWindowImplementation final : public QWidget
         return surface_->activeTransitionDescription();
     }
 
-    QByteArray backgroundPickerTitle() const
-    {
-        return Settings::Editor::backgroundPickerTitle();
-    }
 #endif
 
     QByteArray largeImageState() const
@@ -464,16 +461,6 @@ class ViewerWindowImplementation final : public QWidget
         return Settings::Editor::describe(currentSettings());
     }
 
-    QByteArray storedSettingsState() const
-    {
-        return Settings::Editor::describe(Settings::Editor::readAccepted());
-    }
-
-    QByteArray settingsFileName() const
-    {
-        return Settings::Editor::settingsFileName();
-    }
-
     QByteArray settingsDialogStructure() const
     {
         return settingsEditor_->dialogStructure();
@@ -519,19 +506,14 @@ class ViewerWindowImplementation final : public QWidget
         return surface_->presentationDescription();
     }
 
-    void applyTestSettings(const QStringList &values)
+    void applyAcceptedSettingsForTest(const Settings::Values &values)
     {
-        if (const auto settings = Settings::Editor::parseTestValues(values)) {
-            applySettings(settings->wheelAction, settings->background, settings->statusVisible,
-                          settings->cacheBudgetBytes, settings->restoreWindowGeometry);
-        }
+        applySettings(values);
     }
 
-    void previewTestSettings(const QStringList &values)
+    void setSettingsDialogValuesForTest(const Settings::Values &values)
     {
-        if (const auto settings = Settings::Editor::parseTestValues(values)) {
-            settingsEditor_->setTestValues(*settings);
-        }
+        settingsEditor_->setTestValues(values);
     }
 
     void resetTestSettings()
@@ -556,11 +538,6 @@ class ViewerWindowImplementation final : public QWidget
     {
         persistWindowGeometry();
         QWidget::closeEvent(event);
-    }
-
-    void resizeEvent(QResizeEvent *event) override
-    {
-        QWidget::resizeEvent(event);
     }
 
     bool eventFilter(QObject *watched, QEvent *event) override
@@ -753,6 +730,7 @@ class ViewerWindowImplementation final : public QWidget
     }
 
   private:
+#ifdef FLICK_ENABLE_TEST_HARNESS
     template <typename MenuContainer> static QString menuStructure(const MenuContainer *container)
     {
         if (container == nullptr) {
@@ -771,6 +749,7 @@ class ViewerWindowImplementation final : public QWidget
         }
         return entries.join(QLatin1Char('|'));
     }
+#endif
 
     QAction *commandAction(const char *objectName) const
     {
@@ -895,12 +874,9 @@ class ViewerWindowImplementation final : public QWidget
         viewport_->viewport()->setPalette(palette);
     }
 
-    void applySettings(const WheelAction wheelAction, const QColor &background,
-                       const bool statusVisible, const qsizetype cacheBudgetBytes,
-                       const bool restoreWindowGeometry)
+    void applySettings(const Settings::Values &values)
     {
-        previewSettings(
-            {wheelAction, background, statusVisible, cacheBudgetBytes, restoreWindowGeometry});
+        previewSettings(values);
         Settings::Editor::persistAccepted(currentSettings());
     }
 
@@ -1831,7 +1807,6 @@ FLICK_FORWARD_TEST_QUERY(QByteArray, errorState)
 FLICK_FORWARD_TEST_QUERY(QByteArray, primaryActionState)
 FLICK_FORWARD_TEST_QUERY(QByteArray, presentationMotionContract)
 FLICK_FORWARD_TEST_QUERY(QByteArray, activePresentationTransition)
-FLICK_FORWARD_TEST_QUERY(QByteArray, backgroundPickerTitle)
 FLICK_FORWARD_TEST_QUERY(QByteArray, largeImageState)
 FLICK_FORWARD_TEST_QUERY(QByteArray, contextActions)
 FLICK_FORWARD_TEST_QUERY(QByteArray, contextMenuStructure)
@@ -1842,8 +1817,6 @@ FLICK_FORWARD_TEST_QUERY(QByteArray, quitActionState)
 FLICK_FORWARD_TEST_QUERY(QByteArray, focusState)
 FLICK_FORWARD_TEST_QUERY(QByteArray, accessibilityState)
 FLICK_FORWARD_TEST_QUERY(QByteArray, settingsState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, storedSettingsState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, settingsFileName)
 FLICK_FORWARD_TEST_QUERY(QByteArray, settingsDialogStructure)
 FLICK_FORWARD_TEST_QUERY(QByteArray, settingsDialogGeometry)
 FLICK_FORWARD_TEST_QUERY(QByteArray, settingsDialogFocusOrder)
@@ -1862,14 +1835,14 @@ void ViewerWindowTestControl::persistWindowGeometry()
     window_.implementation.persistWindowGeometry();
 }
 
-void ViewerWindowTestControl::applyTestSettings(const QStringList &values)
+void ViewerWindowTestControl::applySettings(const Settings::Values &values)
 {
-    window_.implementation.applyTestSettings(values);
+    window_.implementation.applyAcceptedSettingsForTest(values);
 }
 
-void ViewerWindowTestControl::previewTestSettings(const QStringList &values)
+void ViewerWindowTestControl::setSettingsDialogValues(const Settings::Values &values)
 {
-    window_.implementation.previewTestSettings(values);
+    window_.implementation.setSettingsDialogValuesForTest(values);
 }
 
 void ViewerWindowTestControl::resetTestSettings() { window_.implementation.resetTestSettings(); }

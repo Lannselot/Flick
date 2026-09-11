@@ -4,6 +4,7 @@
 
 #include "flick_application.h"
 #include "platform_services.h"
+#include "settings_editor.h"
 #include "viewer_window_test_control.h"
 
 #include <QAction>
@@ -94,11 +95,12 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fflush(stdout);
                 return;
             } else if (input.startsWith("StoredSettingsState")) {
-                fprintf(stdout, "%s\n", window.storedSettingsState().constData());
+                fprintf(stdout, "%s\n",
+                        Settings::Editor::describe(Settings::Editor::readAccepted()).constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsFileName")) {
-                fprintf(stdout, "%s\n", window.settingsFileName().constData());
+                fprintf(stdout, "%s\n", Settings::Editor::settingsFileName().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsDialogStructure")) {
@@ -139,7 +141,7 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fflush(stdout);
                 return;
             } else if (input.startsWith("BackgroundPickerTitle")) {
-                fprintf(stdout, "%s\n", window.backgroundPickerTitle().constData());
+                fprintf(stdout, "%s\n", Settings::Editor::backgroundPickerTitle().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SaveWindowGeometry")) {
@@ -148,15 +150,21 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fflush(stdout);
                 return;
             } else if (input.startsWith("ApplySettings:")) {
-                window.applyTestSettings(
+                const auto values = Settings::Editor::parseTestValues(
                     QString::fromUtf8(input.mid(14).trimmed()).split(QLatin1Char(':')));
+                if (values) {
+                    window.applySettings(*values);
+                }
                 return;
             } else if (input.startsWith("OpenSettings")) {
                 window.triggerAction(QStringLiteral("settingsAction"));
                 return;
             } else if (input.startsWith("PreviewSettings:")) {
-                window.previewTestSettings(
+                const auto values = Settings::Editor::parseTestValues(
                     QString::fromUtf8(input.mid(16).trimmed()).split(QLatin1Char(':')));
+                if (values) {
+                    window.setSettingsDialogValues(*values);
+                }
                 return;
             } else if (input.startsWith("ResetSettings")) {
                 window.resetTestSettings();
