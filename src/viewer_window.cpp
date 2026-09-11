@@ -291,7 +291,10 @@ class ViewerWindowImplementation final : public QWidget
 
     void persistWindowGeometry()
     {
-        Settings::Editor::persistWindowGeometry(saveGeometry(), restoreWindowGeometry_);
+        const QByteArray geometry = isFullScreen() && !windowedGeometry_.isEmpty()
+                                        ? windowedGeometry_
+                                        : saveGeometry();
+        Settings::Editor::persistWindowGeometry(geometry, restoreWindowGeometry_);
     }
 
     void openExternalFile(const QString &path)
@@ -436,6 +439,10 @@ class ViewerWindowImplementation final : public QWidget
     void closeEvent(QCloseEvent *event) override
     {
         persistWindowGeometry();
+        if (isFullScreen()) {
+            showNormal();
+            applicationMenuBar_->show();
+        }
         QWidget::closeEvent(event);
     }
 
@@ -995,6 +1002,7 @@ class ViewerWindowImplementation final : public QWidget
         if (isFullScreen()) {
             leaveFullscreen();
         } else {
+            windowedGeometry_ = saveGeometry();
             applicationMenuBar_->hide();
             showFullScreen();
             surface_->enteredFullscreen();
@@ -1601,6 +1609,7 @@ class ViewerWindowImplementation final : public QWidget
     QPointF lastDragPosition_;
     QColor viewportBackground_{QStringLiteral("#181A1B")};
     bool restoreWindowGeometry_ = false;
+    QByteArray windowedGeometry_;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
     QList<QAction *> imageActions_;
     std::unique_ptr<ImageInformation::Dialog> informationDialog_;

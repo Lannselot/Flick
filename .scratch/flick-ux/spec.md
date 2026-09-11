@@ -143,7 +143,9 @@ image.
 
 Fullscreen contains only the viewing surface: the application menu and any control bar are hidden.
 Pointer motion reveals the status overlay. On first entry, briefly teach **F11 or Esc to exit
-fullscreen**. The context menu remains available.
+fullscreen**. The context menu remains available. Closing Flick while fullscreen does not persist
+fullscreen as the next-launch window state; optional geometry restoration retains only the normal
+window size and position.
 
 ## Dialogs
 

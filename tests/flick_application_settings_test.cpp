@@ -19,9 +19,42 @@ class FlickApplicationSettingsTest final : public QObject, protected Application
 private slots:
     void initTestCase() { initializeProcessTest(); }
     void settingsApplyImmediatelyAndPersistAcrossLaunches();
+    void closingFullscreenRestoresTheNormalWindowOnRelaunch();
     void testHarnessUsesExplicitSettingsRoot();
     void settingsDialogPreviewsCommitsRollsBackAndResets();
 };
+
+void FlickApplicationSettingsTest::closingFullscreenRestoresTheNormalWindowOnRelaunch()
+{
+    const QString image =
+        writeFixture(QStringLiteral("known.png.base64"), QStringLiteral("fullscreen-close.png"));
+    QTemporaryDir sharedConfiguration;
+    QVERIFY(!image.isEmpty());
+    QVERIFY(sharedConfiguration.isValid());
+    const QString configHome = sharedConfiguration.filePath(QStringLiteral("config"));
+
+    RunningFlick firstRun;
+    start(firstRun, {image}, {}, 0, 0, configHome);
+    waitForScreenshot(firstRun);
+    sendCommand(firstRun, QByteArrayLiteral("ApplySettings:navigate:#202020:1:32:1"));
+    sendCommand(firstRun, QByteArrayLiteral("Resize:720:480"));
+    sendCommandAndWaitForScreenshot(firstRun, QByteArrayLiteral("F11"));
+    QCOMPARE(sendQueryAndWaitForReply(firstRun, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("fullscreen"));
+    sendCommand(firstRun, QByteArrayLiteral("Close"));
+    QTRY_COMPARE_WITH_TIMEOUT(firstRun.process.state(), QProcess::NotRunning, 2000);
+
+    RunningFlick relaunched;
+    start(relaunched, {image}, {}, 0, 0, configHome);
+    waitForScreenshot(relaunched);
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("UiState")).split('|').at(0),
+             QByteArrayLiteral("windowed"));
+    QCOMPARE(sendQueryAndWaitForReply(relaunched,
+                                      QByteArrayLiteral("ApplicationMenuVisibility")),
+             QByteArrayLiteral("visible"));
+    QCOMPARE(sendQueryAndWaitForReply(relaunched, QByteArrayLiteral("WindowGeometry")),
+             QByteArrayLiteral("720x480"));
+}
 
 void FlickApplicationSettingsTest::settingsApplyImmediatelyAndPersistAcrossLaunches()
 {
