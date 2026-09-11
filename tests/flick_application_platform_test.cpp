@@ -37,20 +37,30 @@ void FlickApplicationPlatformTest::togglesFullscreenFromKeyboardAndPointer()
     waitForScreenshot(flick);
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
              QByteArrayLiteral("windowed"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuVisibility")),
+             QByteArrayLiteral("visible"));
 
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("F11"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
              QByteArrayLiteral("fullscreen"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuVisibility")),
+             QByteArrayLiteral("hidden"));
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("Escape"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
              QByteArrayLiteral("windowed"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuVisibility")),
+             QByteArrayLiteral("visible"));
 
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("DoubleClick:250:150"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
              QByteArrayLiteral("fullscreen"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuVisibility")),
+             QByteArrayLiteral("hidden"));
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("DoubleClick:250:150"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("UiState")).split('|').at(0),
              QByteArrayLiteral("windowed"));
+    QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuVisibility")),
+             QByteArrayLiteral("visible"));
 }
 
 void FlickApplicationPlatformTest::firstUseTeachingPersistsAfterBrowsingIsLearned()
