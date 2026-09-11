@@ -4,10 +4,8 @@
 
 #include <memory>
 
-class FlickApplication;
 class PlatformServices;
 class QString;
-class TestPlatformServices;
 class ViewerWindow;
 
 struct ViewerWindowDeleter
@@ -22,8 +20,3 @@ ViewerWindowPtr createViewerWindow(const QString &initialPath,
 void installViewerWindowAccessibility();
 void openViewerWindowFile(ViewerWindow &window, const QString &path);
 void showViewerWindow(ViewerWindow &window);
-
-#ifdef FLICK_ENABLE_TEST_HARNESS
-void installViewerWindowTestProtocol(ViewerWindow &window, FlickApplication &application,
-                                     TestPlatformServices &platformServices);
-#endif

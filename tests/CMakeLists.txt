@@ -71,6 +71,15 @@ add_test(
         ${PROJECT_SOURCE_DIR}
 )
 
+add_test(
+    NAME flick.production-excludes-test-adapter
+    COMMAND ${CMAKE_COMMAND}
+        "-DPRODUCTION_SOURCES=$<JOIN:$<TARGET_PROPERTY:flick,SOURCES>,;>"
+        "-DDRIVER_SOURCES=$<JOIN:$<TARGET_PROPERTY:flick_test_driver,SOURCES>,;>"
+        -DTEST_ADAPTER_SOURCE=${PROJECT_SOURCE_DIR}/src/process_test_adapter.cpp
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/production_target_sources_test.cmake
+)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_program(BASH_EXECUTABLE bash REQUIRED)
     add_test(
