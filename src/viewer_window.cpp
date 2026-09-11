@@ -79,6 +79,13 @@ enum class AnimationPlayback
     Finished
 };
 
+enum class ZoomPolicy
+{
+    Auto,
+    Fit,
+    Fixed
+};
+
 using ImageLoading::LoadedImage;
 using Settings::WheelAction;
 
@@ -432,6 +439,9 @@ class ViewerWindowImplementation final : public QWidget
 
     bool eventFilter(QObject *watched, QEvent *event) override
     {
+        if (watched == viewport_->viewport() && event->type() == QEvent::Resize) {
+            scheduleViewportRefit();
+        }
         if ((watched == viewport_->viewport() || watched == imageLabel_) &&
             event->type() == QEvent::MouseMove) {
             showStatus(true);
@@ -526,15 +536,15 @@ class ViewerWindowImplementation final : public QWidget
             return;
         }
         if (event->matches(QKeySequence::ZoomIn)) {
-            setZoomCentered(zoom_ * 1.25);
+            setFixedZoomCentered(zoom_ * 1.25);
             return;
         }
         if (event->matches(QKeySequence::ZoomOut)) {
-            setZoomCentered(zoom_ / 1.25);
+            setFixedZoomCentered(zoom_ / 1.25);
             return;
         }
         if (event->key() == Qt::Key_1) {
-            setZoomCentered(1.0);
+            setFixedZoomCentered(1.0);
             return;
         }
         if (event->key() == Qt::Key_F) {
@@ -827,11 +837,13 @@ class ViewerWindowImplementation final : public QWidget
             imageActions_.append(action);
         };
         addImageViewerAction(tr("Zoom In"), QStringLiteral("viewerZoomInAction"),
-                             QKeySequence::ZoomIn, [this] { setZoomCentered(zoom_ * 1.25); });
+                             QKeySequence::ZoomIn,
+                             [this] { setFixedZoomCentered(zoom_ * 1.25); });
         addImageViewerAction(tr("Zoom Out"), QStringLiteral("viewerZoomOutAction"),
-                             QKeySequence::ZoomOut, [this] { setZoomCentered(zoom_ / 1.25); });
+                             QKeySequence::ZoomOut,
+                             [this] { setFixedZoomCentered(zoom_ / 1.25); });
         addImageViewerAction(tr("Actual Size"), QStringLiteral("viewerActualSizeAction"),
-                             QKeySequence(Qt::Key_1), [this] { setZoomCentered(1.0); });
+                             QKeySequence(Qt::Key_1), [this] { setFixedZoomCentered(1.0); });
         addImageViewerAction(tr("Fit to Window"), QStringLiteral("viewerFitAction"),
                              QKeySequence(Qt::Key_F), [this] { fitToViewport(); });
         addImageViewerAction(tr("Rotate Left"), QStringLiteral("viewerRotateLeftAction"),
@@ -1164,6 +1176,9 @@ class ViewerWindowImplementation final : public QWidget
         animationPlayback_ = AnimationPlayback::Playing;
         pausedDelayMilliseconds_ = 0;
         rotationQuarterTurns_ = 0;
+        image_ = currentImage_.frames.at(0);
+        zoomPolicy_ = ZoomPolicy::Auto;
+        surface_->showDisplayed();
         applyInitialZoom();
         showFrame(currentFrame_);
         showStatus(false);
@@ -1171,7 +1186,6 @@ class ViewerWindowImplementation final : public QWidget
         if (currentImage_.frames.size() > 1) {
             animationTimer_->start(std::max(1, currentImage_.frameDelays.at(currentFrame_)));
         }
-        surface_->showDisplayed();
         if (path == pendingFilePickerPath_) {
             QSettings settings;
             settings.setValue(QStringLiteral("filePicker/lastDirectory"),
@@ -1263,15 +1277,50 @@ class ViewerWindowImplementation final : public QWidget
 
     void applyInitialZoom()
     {
-        image_ = currentImage_.frames.at(0);
         zoom_ = std::min(1.0, fitZoom());
     }
 
     void fitToViewport()
     {
         if (!image_.isNull()) {
+            zoomPolicy_ = ZoomPolicy::Fit;
             setZoomCentered(fitZoom());
         }
+    }
+
+    void setFixedZoomCentered(const double zoom)
+    {
+        zoomPolicy_ = ZoomPolicy::Fixed;
+        setZoomCentered(zoom);
+    }
+
+    void scheduleViewportRefit()
+    {
+        if (viewportRefitPending_) {
+            return;
+        }
+        viewportRefitPending_ = true;
+        QTimer::singleShot(0, this, [this] {
+            viewportRefitPending_ = false;
+            if (image_.isNull()) {
+                return;
+            }
+            if (zoomPolicy_ == ZoomPolicy::Auto) {
+                setViewportZoom(std::min(1.0, fitZoom()));
+            } else if (zoomPolicy_ == ZoomPolicy::Fit) {
+                setViewportZoom(fitZoom());
+            } else {
+                renderImage();
+            }
+        });
+    }
+
+    void setViewportZoom(const double zoom)
+    {
+        zoom_ = std::clamp(zoom, 0.01, 64.0);
+        renderImage();
+        updateInformation();
+        scheduleCenterView();
     }
 
     void setZoom(const double zoom)
@@ -1303,6 +1352,7 @@ class ViewerWindowImplementation final : public QWidget
             (horizontal->value() + viewportPosition.x() - originBefore.x()) / zoom_,
             (vertical->value() + viewportPosition.y() - originBefore.y()) / zoom_);
         const double steps = angleDelta / 120.0;
+        zoomPolicy_ = ZoomPolicy::Fixed;
         setZoom(zoom_ * std::pow(1.25, steps));
         const QPoint originAfter = imageOrigin();
         horizontal->setValue(
@@ -1541,6 +1591,8 @@ class ViewerWindowImplementation final : public QWidget
     AnimationPlayback animationPlayback_ = AnimationPlayback::Finished;
     WheelAction wheelAction_ = WheelAction::Navigate;
     double zoom_ = 1.0;
+    ZoomPolicy zoomPolicy_ = ZoomPolicy::Auto;
+    bool viewportRefitPending_ = false;
     int rotationQuarterTurns_ = 0;
     bool dragging_ = false;
     QPointF lastDragPosition_;

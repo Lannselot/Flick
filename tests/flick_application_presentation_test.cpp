@@ -12,6 +12,26 @@
 #include <QTest>
 #include "application_process_test_support.h"
 
+namespace {
+struct ReportedViewState
+{
+    double zoom = 0.0;
+    QSize viewportSize;
+};
+
+ReportedViewState reportedViewState(const QByteArray &reply)
+{
+    const QList<QByteArray> fields = reply.split(',');
+    return {fields.at(0).toDouble(), QSize(fields.at(3).toInt(), fields.at(4).toInt())};
+}
+
+double fitScale(const QSize viewportSize, const QSize imageSize)
+{
+    return std::min(double(viewportSize.width()) / imageSize.width(),
+                    double(viewportSize.height()) / imageSize.height());
+}
+} // namespace
+
 class FlickApplicationPresentationTest final : public QObject, protected ApplicationProcessTest
 {
     Q_OBJECT
@@ -22,6 +42,8 @@ private slots:
     void honorsEmbeddedProfilesAndDefaultsUntaggedImagesToSrgb();
     void updatesRenderingWhenTheDisplayProfileChanges();
     void appliesExifOrientation();
+    void refitsAutomaticZoomToTheCurrentViewport();
+    void preservesExplicitZoomPoliciesAcrossViewportChanges();
     void appliesInitialScalingAndKeyboardZoomModes();
     void highZoomRemainsResponsiveWithoutAllocatingTheFullScaledImage();
     void pointerZoomKeepsCursorOnTheSameImagePoint();
@@ -118,6 +140,96 @@ void FlickApplicationPresentationTest::appliesExifOrientation()
     QVERIFY2(red.height() > red.width(), "EXIF orientation 6 was not applied");
 }
 
+void FlickApplicationPresentationTest::refitsAutomaticZoomToTheCurrentViewport()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QColor color(199, 21, 133);
+    const QSize imageSize(1600, 1200);
+    const QString path =
+        writeImage(directory, QStringLiteral("large.png"), color, imageSize);
+    QVERIFY(!path.isEmpty());
+
+    RunningFlick flick;
+    start(flick, {}, path);
+    waitForScreenshot(flick);
+    sendCommand(flick, QByteArrayLiteral("Resize:800:600"));
+    sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("CtrlO"));
+    const QImage displayed = captureAfter(flick, 30);
+    const ReportedViewState state = reportedViewState(
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")));
+    const double expected = fitScale(state.viewportSize, imageSize);
+
+    QVERIFY(qAbs(state.zoom - expected) < 0.001);
+    QCOMPARE(colorBounds(displayed, color).size(),
+             QSize(qRound(imageSize.width() * expected), qRound(imageSize.height() * expected)));
+}
+
+void FlickApplicationPresentationTest::preservesExplicitZoomPoliciesAcrossViewportChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QSize largeSize(1600, 1200);
+    const QSize smallSize(120, 80);
+    const QString large = writeImage(directory, QStringLiteral("1-large.png"), QColor(Qt::red),
+                                     largeSize);
+    const QString small = writeImage(directory, QStringLiteral("2-small.png"), QColor(Qt::green),
+                                     smallSize);
+    QVERIFY(!large.isEmpty());
+    QVERIFY(!small.isEmpty());
+
+    const auto viewState = [this](RunningFlick &flick) {
+        return reportedViewState(
+            sendQueryAndWaitForReply(flick, QByteArrayLiteral("ViewState")));
+    };
+
+    RunningFlick automatic;
+    start(automatic, {large});
+    waitForScreenshot(automatic);
+    for (const QSize windowSize : {QSize(800, 600), QSize(600, 420)}) {
+        sendCommand(automatic, QByteArrayLiteral("Resize:") +
+                                   QByteArray::number(windowSize.width()) + ':' +
+                                   QByteArray::number(windowSize.height()));
+        captureAfter(automatic, 30);
+        const ReportedViewState state = viewState(automatic);
+        QVERIFY(qAbs(state.zoom - fitScale(state.viewportSize, largeSize)) < 0.001);
+    }
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("F11"));
+    ReportedViewState state = viewState(automatic);
+    QVERIFY(qAbs(state.zoom - fitScale(state.viewportSize, largeSize)) < 0.001);
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("Escape"));
+    state = viewState(automatic);
+    QVERIFY(qAbs(state.zoom - fitScale(state.viewportSize, largeSize)) < 0.001);
+
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("ActualSize"));
+    sendCommand(automatic, QByteArrayLiteral("Resize:760:520"));
+    captureAfter(automatic, 30);
+    QCOMPARE(viewState(automatic).zoom, 1.0);
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("CtrlPlus"));
+    const double manualZoom = viewState(automatic).zoom;
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("F11"));
+    QCOMPARE(viewState(automatic).zoom, manualZoom);
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("Escape"));
+    QCOMPARE(viewState(automatic).zoom, manualZoom);
+
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("Right"));
+    state = viewState(automatic);
+    QCOMPARE(state.zoom, 1.0);
+    sendCommand(automatic, QByteArrayLiteral("Resize:900:700"));
+    captureAfter(automatic, 30);
+    QCOMPARE(viewState(automatic).zoom, 1.0);
+
+    sendCommandAndWaitForScreenshot(automatic, QByteArrayLiteral("Fit"));
+    state = viewState(automatic);
+    QVERIFY(state.zoom > 1.0);
+    QVERIFY(qAbs(state.zoom - fitScale(state.viewportSize, smallSize)) < 0.001);
+    sendCommand(automatic, QByteArrayLiteral("Resize:640:480"));
+    captureAfter(automatic, 30);
+    state = viewState(automatic);
+    QVERIFY(state.zoom > 1.0);
+    QVERIFY(qAbs(state.zoom - fitScale(state.viewportSize, smallSize)) < 0.001);
+}
+
 void FlickApplicationPresentationTest::appliesInitialScalingAndKeyboardZoomModes()
 {
     QTemporaryDir directory;
@@ -162,7 +274,9 @@ void FlickApplicationPresentationTest::appliesInitialScalingAndKeyboardZoomModes
     const QList<QByteArray> viewport =
         sendQueryAndWaitForReply(largeFlick, QByteArrayLiteral("ViewState")).split(',');
     const QSize visibleViewport(viewport.at(3).toInt(), viewport.at(4).toInt());
-    QCOMPARE(colorBounds(initialLarge, color).size(), visibleViewport);
+    const double initialFit = fitScale(visibleViewport, QSize(960, 640));
+    QCOMPARE(colorBounds(initialLarge, color).size(),
+             QSize(qRound(960 * initialFit), qRound(640 * initialFit)));
     const QImage largeActual =
         sendCommandAndWaitForScreenshot(largeFlick, QByteArrayLiteral("ActualSize"));
     QCOMPARE(colorBounds(largeActual, color).size(), visibleViewport);

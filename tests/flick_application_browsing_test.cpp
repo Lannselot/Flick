@@ -139,7 +139,8 @@ void FlickApplicationBrowsingTest::validDragFeedbackRestoresThePreviousPresentat
     QVERIFY(!path.isEmpty());
     RunningFlick flick;
     start(flick, {path});
-    const QImage displayed = waitForScreenshot(flick);
+    waitForScreenshot(flick);
+    const QImage displayed = captureAfter(flick, 30);
 
     sendCommandAndWaitForScreenshot(flick, QByteArrayLiteral("BeginDrag:") + path.toUtf8());
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState")),
