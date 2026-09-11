@@ -18,20 +18,6 @@
 namespace {
 constexpr qint64 LargeImagePixelLimit = 100'000'000;
 
-int testDecodeDelayMilliseconds(const QString &path)
-{
-#ifdef FLICK_ENABLE_TEST_HARNESS
-    const QString delayedPath = qEnvironmentVariable("FLICK_TEST_DECODE_DELAY_PATH");
-    if (!delayedPath.isEmpty() && delayedPath != path) {
-        return 0;
-    }
-    return qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
-#else
-    Q_UNUSED(path)
-    return 0;
-#endif
-}
-
 struct AnimationMetadata
 {
     QList<int> frameDelays;
@@ -276,7 +262,11 @@ public:
                                  outcomeHandler(std::move(outcome));
                              }
                          });
-        const int delay = testDecodeDelayMilliseconds(request.path);
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        const int delay = request.delayMilliseconds;
+#else
+        constexpr int delay = 0;
+#endif
         watcher->setFuture(QtConcurrent::run([request, delay] {
             if (delay > 0) {
                 QThread::msleep(static_cast<unsigned long>(delay));

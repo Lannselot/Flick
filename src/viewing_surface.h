@@ -37,8 +37,37 @@ public:
     std::function<void()> hidePointer;
   };
 
+  struct Configuration {
+#ifdef FLICK_ENABLE_TEST_HARNESS
+    int loadingIndicatorDelayMilliseconds = 120;
+    bool reducedMotion = false;
+#endif
+  };
+
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  struct PresentationSnapshot {
+    State state = State::Empty;
+    bool dropTargetVisible = false;
+    QString dropTargetText;
+    QString loadingFilename;
+    bool loadingIndicatorVisible = false;
+    QString errorExplanation;
+    QString errorDetails;
+    bool errorDetailsVisible = false;
+    QString errorRetryText;
+    QString errorDetailsActionText;
+    QString errorNavigationHint;
+    QString largeImageExplanation;
+    QString primaryActionText;
+    bool primaryActionIsDefault = false;
+    QString secondaryActionText;
+    bool optionalOpacity = false;
+    bool activeOpacityEffect = false;
+  };
+#endif
+
   explicit ViewingSurface(QWidget *displayedContent, Commands commands,
-                          QWidget *parent = nullptr);
+                          QWidget *parent, Configuration configuration);
 
   void showEmpty();
   void beginLoading(const QString &filename);
@@ -67,12 +96,8 @@ public:
   QString dropTargetText() const;
 
   State state() const;
-  QByteArray presentationDescription() const;
-  QByteArray errorDescription() const;
-  QByteArray primaryActionDescription() const;
 #ifdef FLICK_ENABLE_TEST_HARNESS
-  QByteArray motionContractDescription() const;
-  QByteArray activeTransitionDescription() const;
+  PresentationSnapshot presentationSnapshot() const;
 #endif
 
 protected:
@@ -111,5 +136,9 @@ private:
   bool statusEnabled_ = true;
   bool browsingTeachingComplete_ = false;
   bool fullscreenTeachingComplete_ = false;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  int loadingIndicatorDelayMilliseconds_ = 120;
+  bool reducedMotion_ = false;
+#endif
   QString pendingFeedback_;
 };

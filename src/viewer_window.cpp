@@ -143,8 +143,9 @@ class ImageCanvas final : public QLabel
 class ViewerWindowImplementation final : public QWidget
 {
   public:
-    ViewerWindowImplementation(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices)
-        : platformServices_(std::move(platformServices)), imageLoader_(this)
+    ViewerWindowImplementation(const QString &imagePath, std::unique_ptr<PlatformServices> platformServices,
+                               ViewerWindowConfiguration configuration)
+        : configuration_(std::move(configuration)), platformServices_(std::move(platformServices)), imageLoader_(this)
     {
         setWindowTitle(QStringLiteral("Flick"));
         setObjectName(QStringLiteral("viewingSurfaceFocus"));
@@ -174,6 +175,12 @@ class ViewerWindowImplementation final : public QWidget
         viewport_->viewport()->installEventFilter(this);
         viewport_->viewport()->setMouseTracking(true);
         viewport_->setContextMenuPolicy(Qt::CustomContextMenu);
+        ViewingSurface::Configuration surfaceConfiguration;
+#ifdef FLICK_ENABLE_TEST_HARNESS
+        surfaceConfiguration.loadingIndicatorDelayMilliseconds =
+            configuration_.loadingIndicatorDelayMilliseconds;
+        surfaceConfiguration.reducedMotion = configuration_.reducedMotion;
+#endif
         surface_ = new ViewingSurface(
             viewport_,
             {.chooseFile = [this] { openFromFilePicker(); },
@@ -190,7 +197,8 @@ class ViewerWindowImplementation final : public QWidget
                      static_cast<int>(browsingSequence_.paths().size()), qRound(zoom_ * 100)};
              },
              .isFullscreen = [this] { return isFullScreen(); },
-             .hidePointer = [this] { viewport_->viewport()->setCursor(Qt::BlankCursor); }});
+             .hidePointer = [this] { viewport_->viewport()->setCursor(Qt::BlankCursor); }},
+            this, surfaceConfiguration);
         surface_->installEventFilter(this);
         layout->addWidget(surface_);
         auto *wheelActionGroup = new QActionGroup(this);
@@ -288,144 +296,61 @@ class ViewerWindowImplementation final : public QWidget
     }
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
-    qsizetype cacheBytes() const
+    ViewerWindowTestSnapshot testSnapshot(const QString &decodePath) const
     {
-        return imageLoader_.cacheBytes();
-    }
+        ViewerWindowTestSnapshot snapshot;
+        snapshot.performance.loading = isLoading();
+        snapshot.performance.cacheBytes = imageLoader_.cacheBytes();
+        snapshot.performance.decodesInFlight = imageLoader_.requestsInFlight();
+        snapshot.performance.requestedPathDecodeCount =
+            decodeCounts_.value(QFileInfo(decodePath).canonicalFilePath());
+        snapshot.view.zoom = zoom_;
+        snapshot.view.scrollPosition = {viewport_->horizontalScrollBar()->value(),
+                                   viewport_->verticalScrollBar()->value()};
+        snapshot.view.viewportSize = viewport_->viewport()->size();
+        snapshot.view.imageOrigin = imageOrigin();
+        snapshot.view.fullScreen = isFullScreen();
+        snapshot.view.statusVisible = surface_->statusVisible();
+        snapshot.view.pointerHidden = viewport_->viewport()->cursor().shape() == Qt::BlankCursor;
+        snapshot.view.statusText = surface_->statusText();
+        snapshot.view.windowSize = size();
+        snapshot.presentation.informationText = informationDialog_->text();
+        snapshot.presentation.informationDialog = informationDialog_->state();
+        snapshot.presentation.presentation = surface_->presentationSnapshot();
+        snapshot.presentation.pendingLargeImageSize = pendingLargeImageSize_;
 
-    qsizetype decodesInFlight() const
-    {
-        return imageLoader_.requestsInFlight();
-    }
-
-    int decodeCount(const QString &path) const
-    {
-        return decodeCounts_.value(QFileInfo(path).canonicalFilePath());
-    }
-
-    QByteArray viewState() const
-    {
-        return QByteArray::number(zoom_, 'f', 6) + ',' +
-               QByteArray::number(viewport_->horizontalScrollBar()->value()) + ',' +
-               QByteArray::number(viewport_->verticalScrollBar()->value()) + ',' +
-               QByteArray::number(viewport_->viewport()->width()) + ',' +
-               QByteArray::number(viewport_->viewport()->height()) + ',' +
-               QByteArray::number(imageOrigin().x()) + ',' + QByteArray::number(imageOrigin().y());
-    }
-
-    QByteArray uiState() const
-    {
-        return QByteArray(isFullScreen() ? "fullscreen" : "windowed") + '|' +
-               (surface_->statusVisible() ? "status-visible" : "status-hidden") + '|' +
-               (viewport_->viewport()->cursor().shape() == Qt::BlankCursor ? "pointer-hidden"
-                                                                           : "pointer-visible") +
-               '|' + surface_->statusText().toUtf8();
-    }
-
-    QByteArray informationState() const
-    {
-        return informationDialog_->text().toUtf8();
-    }
-
-    QByteArray informationDialogState() const
-    {
-        const ImageInformation::DialogState state = informationDialog_->state();
-        return !state.open ? QByteArrayLiteral("closed")
-                           : QByteArrayLiteral("open|") + QByteArray::number(state.size.width()) +
-                                 'x' + QByteArray::number(state.size.height());
-    }
-
-    void focusViewingSurfaceForTest()
-    {
-        activateWindow();
-        setFocus(Qt::OtherFocusReason);
-    }
-
-    QByteArray feedbackState() const
-    {
-        return surface_->statusText().toUtf8();
-    }
-
-    QByteArray errorState() const
-    {
-        return surface_->errorDescription();
-    }
-
-    QByteArray primaryActionState() const
-    {
-        return surface_->primaryActionDescription();
-    }
-
-#ifdef FLICK_ENABLE_TEST_HARNESS
-    QByteArray presentationMotionContract() const
-    {
-        return surface_->motionContractDescription();
-    }
-
-    QByteArray activePresentationTransition() const
-    {
-        return surface_->activeTransitionDescription();
-    }
-
-#endif
-
-    QByteArray largeImageState() const
-    {
-        return QByteArray(surface_->isLargeImageConfirmationVisible() ? "visible" : "hidden") +
-               '|' + QByteArray::number(pendingLargeImageSize_.width()) + 'x' +
-               QByteArray::number(pendingLargeImageSize_.height());
-    }
-
-    QByteArray contextActions() const
-    {
-        QStringList descriptions;
+        const std::function<TestActionSnapshot(const QAction *)> actionSnapshot =
+            [&actionSnapshot](const QAction *action) {
+                TestActionSnapshot result{action->text(),
+                                          action->shortcut().toString(QKeySequence::NativeText),
+                                          action->isEnabled(), action->isSeparator(), {}};
+                if (action->menu() != nullptr) {
+                    for (const QAction *child : action->menu()->actions()) {
+                        result.children.append(actionSnapshot(child));
+                    }
+                }
+                return result;
+            };
         for (const QAction *action : viewport_->actions()) {
-            if (!action->objectName().startsWith(QStringLiteral("image"))) {
-                continue;
+            if (action->objectName().startsWith(QStringLiteral("image"))) {
+                snapshot.commands.imageActions.append(actionSnapshot(action));
             }
-            descriptions.append(action->text() + QStringLiteral(" [") +
-                                action->shortcut().toString(QKeySequence::NativeText) +
-                                QStringLiteral("]"));
+            if (action->objectName().startsWith(QStringLiteral("viewer")) ||
+                action->objectName() == QStringLiteral("settingsAction")) {
+                snapshot.accessibility.accessibleActions.append(actionSnapshot(action));
+            }
         }
-        return descriptions.join(QLatin1Char('|')).toUtf8();
-    }
-
-    QByteArray contextMenuStructure() const
-    {
-        return menuStructure(contextMenu_).toUtf8();
-    }
-
-    QByteArray contextMenuGeometry() const
-    {
-        const auto encode = [](const QRect &rect) {
-            return QByteArray::number(rect.x()) + ',' + QByteArray::number(rect.y()) + ',' +
-                   QByteArray::number(rect.width()) + ',' + QByteArray::number(rect.height());
-        };
-        QScreen *screen = contextMenu_->screen();
-        return encode(contextMenu_->frameGeometry()) + '|' +
-               encode(screen != nullptr ? screen->availableGeometry() : QRect{});
-    }
-
-    QByteArray applicationMenuStructure() const
-    {
-        return menuStructure(applicationMenuBar_).toUtf8();
-    }
-
-    QByteArray commandAvailability() const
-    {
-        QStringList entries;
         for (const QAction *action : contextMenu_->actions()) {
-            if (!action->isSeparator()) {
-                entries.append(
-                    action->text() + QLatin1Char('=') +
-                    (action->isEnabled() ? QStringLiteral("enabled") : QStringLiteral("disabled")));
-            }
+            snapshot.commands.contextMenu.append(actionSnapshot(action));
         }
-        return entries.join(QLatin1Char('|')).toUtf8();
-    }
+        for (const QAction *action : applicationMenuBar_->actions()) {
+            snapshot.commands.applicationMenu.append(actionSnapshot(action));
+        }
+        snapshot.commands.contextMenuGeometry = contextMenu_->frameGeometry();
+        QScreen *screen = contextMenu_->screen();
+        snapshot.commands.contextMenuScreenGeometry =
+            screen != nullptr ? screen->availableGeometry() : QRect{};
 
-    QByteArray quitActionState() const
-    {
         QAction *quitAction = commandAction("applicationQuitAction");
         bool fileMenuContainsAction = false;
         for (const QAction *menuAction : applicationMenuBar_->actions()) {
@@ -434,76 +359,30 @@ class ViewerWindowImplementation final : public QWidget
                 break;
             }
         }
-        const bool shared = contextMenu_->actions().contains(quitAction) && fileMenuContainsAction;
-        return QByteArray(shared ? "shared" : "duplicated") + '|' +
-               (quitAction->menuRole() == QAction::QuitRole ? "standard-role" : "custom-role") +
-               '|' + (quitAction->shortcut() == QKeySequence::Quit ? "standard-shortcut"
-                                                                   : "custom-shortcut");
-    }
-
-    QByteArray focusState() const
-    {
+        snapshot.commands.quitActionShared =
+            contextMenu_->actions().contains(quitAction) && fileMenuContainsAction;
+        snapshot.commands.quitActionHasStandardRole = quitAction->menuRole() == QAction::QuitRole;
+        snapshot.commands.quitActionHasStandardShortcut = quitAction->shortcut() == QKeySequence::Quit;
         if (QApplication::activePopupWidget() != nullptr) {
-            return QByteArrayLiteral("menu");
+            snapshot.accessibility.focusOwner = TestFocusOwner::Menu;
+        } else if (QApplication::activeModalWidget() != nullptr ||
+                   qobject_cast<QDialog *>(QApplication::activeWindow()) != nullptr) {
+            snapshot.accessibility.focusOwner = TestFocusOwner::Dialog;
+        } else {
+            QWidget *focused = QApplication::focusWidget();
+            snapshot.accessibility.focusOwner =
+                (focused == this || (focused != nullptr && isAncestorOf(focused)))
+                    ? TestFocusOwner::ViewingSurface
+                    : TestFocusOwner::Other;
         }
-        if (QApplication::activeModalWidget() != nullptr ||
-            qobject_cast<QDialog *>(QApplication::activeWindow()) != nullptr) {
-            return QByteArrayLiteral("dialog");
-        }
-        QWidget *focused = QApplication::focusWidget();
-        return (focused == this || (focused != nullptr && isAncestorOf(focused)))
-                   ? QByteArrayLiteral("viewing-surface")
-                   : QByteArrayLiteral("other");
-    }
-
-    QByteArray settingsState() const
-    {
-        return Settings::Editor::describe(currentSettings());
-    }
-
-    QByteArray settingsDialogStructure() const
-    {
-        return settingsEditor_->dialogStructure();
-    }
-
-    QByteArray settingsDialogGeometry() const
-    {
-        return settingsEditor_->dialogGeometry();
-    }
-
-    QByteArray settingsDialogFocusOrder() const
-    {
-        return settingsEditor_->dialogFocusOrder();
-    }
-
-    QByteArray accessibilityState() const
-    {
         const QAccessibleInterface *interface = QAccessible::queryAccessibleInterface(imageLabel_);
-        const QString role = interface && interface->role() == QAccessible::Graphic
-                                 ? QStringLiteral("Graphic")
-                                 : QStringLiteral("Unknown");
-        QStringList descriptions{imageLabel_->accessibleName() +
-                                 QStringLiteral("|AccessibleRole=") + role + QLatin1Char('|') +
-                                 imageLabel_->accessibleDescription()};
-        for (const QAction *action : viewport_->actions()) {
-            if (!action->objectName().startsWith(QStringLiteral("viewer")) &&
-                action->objectName() != QStringLiteral("settingsAction")) {
-                continue;
-            }
-            descriptions.append(action->text() + QLatin1Char('|') +
-                                action->shortcut().toString(QKeySequence::NativeText));
-        }
-        return descriptions.join(QLatin1Char('\n')).toUtf8();
-    }
-
-    QByteArray windowGeometryState() const
-    {
-        return QByteArray::number(width()) + 'x' + QByteArray::number(height());
-    }
-
-    QByteArray presentationState() const
-    {
-        return surface_->presentationDescription();
+        snapshot.accessibility.accessibleImageName = imageLabel_->accessibleName();
+        snapshot.accessibility.accessibleImageHasGraphicRole =
+            interface != nullptr && interface->role() == QAccessible::Graphic;
+        snapshot.accessibility.accessibleImageDescription = imageLabel_->accessibleDescription();
+        snapshot.settings.settings = currentSettings();
+        snapshot.settings.settingsDialog = settingsEditor_->testSnapshot();
+        return snapshot;
     }
 
     void applyAcceptedSettingsForTest(const Settings::Values &values)
@@ -516,19 +395,25 @@ class ViewerWindowImplementation final : public QWidget
         settingsEditor_->setTestValues(values);
     }
 
-    void resetTestSettings()
+    void performTestOperation(const ViewerWindowTestOperation operation)
     {
-        settingsEditor_->resetForTest();
-    }
-
-    void finishTestSettings(const bool apply)
-    {
-        settingsEditor_->finishForTest(apply);
-    }
-
-    void failExternalActionsForTest()
-    {
-        failExternalActionsForTest_ = true;
+        switch (operation) {
+        case ViewerWindowTestOperation::OpenSettings: commandAction("settingsAction")->trigger(); break;
+        case ViewerWindowTestOperation::QuitApplication: commandAction("applicationQuitAction")->trigger(); break;
+        case ViewerWindowTestOperation::SelectWheelZoom: commandAction("wheelZoomAction")->trigger(); break;
+        case ViewerWindowTestOperation::FocusErrorDetails: findChild<QToolButton *>()->setFocus(Qt::OtherFocusReason); break;
+        case ViewerWindowTestOperation::FocusLargeImageSkip: findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))->setFocus(Qt::OtherFocusReason); break;
+        case ViewerWindowTestOperation::ToggleErrorDetails: if (auto *button = findChild<QToolButton *>()) button->toggle(); break;
+        case ViewerWindowTestOperation::ApproveLargeImage: findChild<QPushButton *>(QStringLiteral("approveLargeImage"))->click(); break;
+        case ViewerWindowTestOperation::RejectLargeImage: findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))->click(); break;
+        case ViewerWindowTestOperation::FocusViewingSurface: activateWindow(); setFocus(Qt::OtherFocusReason); break;
+        case ViewerWindowTestOperation::PersistWindowGeometry: persistWindowGeometry(); break;
+        case ViewerWindowTestOperation::ResetSettings: settingsEditor_->resetForTest(); break;
+        case ViewerWindowTestOperation::ApplySettingsDialog: settingsEditor_->finishForTest(true); break;
+        case ViewerWindowTestOperation::CancelSettingsDialog: settingsEditor_->finishForTest(false); break;
+        case ViewerWindowTestOperation::DisplayConfigurationChanged: displayConfigurationChanged(); break;
+        case ViewerWindowTestOperation::FailExternalActions: failExternalActionsForTest_ = true; break;
+        }
     }
 
 #endif
@@ -730,27 +615,6 @@ class ViewerWindowImplementation final : public QWidget
     }
 
   private:
-#ifdef FLICK_ENABLE_TEST_HARNESS
-    template <typename MenuContainer> static QString menuStructure(const MenuContainer *container)
-    {
-        if (container == nullptr) {
-            return {};
-        }
-        QStringList entries;
-        for (const QAction *action : container->actions()) {
-            if (action->isSeparator()) {
-                entries.append(QStringLiteral("---"));
-            } else if (action->menu() != nullptr) {
-                entries.append(action->text() + QLatin1Char('[') + menuStructure(action->menu()) +
-                               QLatin1Char(']'));
-            } else {
-                entries.append(action->text());
-            }
-        }
-        return entries.join(QLatin1Char('|'));
-    }
-#endif
-
     QAction *commandAction(const char *objectName) const
     {
         QAction *action = findChild<QAction *>(QString::fromLatin1(objectName));
@@ -841,9 +705,8 @@ class ViewerWindowImplementation final : public QWidget
     {
         Settings::Values values = Settings::Editor::readAccepted();
 #ifdef FLICK_ENABLE_TEST_HARNESS
-        const qint64 testBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
-        if (testBudget > 0) {
-            values.cacheBudgetBytes = testBudget;
+        if (configuration_.cacheBudgetBytes.has_value()) {
+            values.cacheBudgetBytes = *configuration_.cacheBudgetBytes;
         }
 #endif
         if (values.cacheBudgetBytes <= 0) {
@@ -1182,8 +1045,8 @@ class ViewerWindowImplementation final : public QWidget
         const QString initialDirectory =
             settings.value(QStringLiteral("filePicker/lastDirectory"), QDir::homePath()).toString();
 #ifdef FLICK_ENABLE_TEST_HARNESS
-        if (qEnvironmentVariableIsSet("FLICK_TEST_FILE_PICKER_SELECTION")) {
-            const QString testSelection = qEnvironmentVariable("FLICK_TEST_FILE_PICKER_SELECTION");
+        if (configuration_.filePickerSelection.has_value()) {
+            const QString testSelection = *configuration_.filePickerSelection;
             if (testSelection.isEmpty()) {
                 return;
             }
@@ -1551,14 +1414,16 @@ class ViewerWindowImplementation final : public QWidget
                                               const bool approvedLargeImage = false) const
     {
 #ifdef FLICK_ENABLE_TEST_HARNESS
-        const qint64 configuredAllocationLimit =
-            qEnvironmentVariableIntValue("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES");
-        const qint64 allocationLimit =
-            configuredAllocationLimit > 0 ? configuredAllocationLimit : LargeImageAllocationLimit;
+        const qint64 allocationLimit = configuration_.largeImageAllocationLimitBytes.value_or(
+            LargeImageAllocationLimit);
+        const int delay = configuration_.delayedDecodePath.isEmpty() ||
+                                  configuration_.delayedDecodePath == path
+                              ? configuration_.decodeDelayMilliseconds
+                              : 0;
+        return {path, approvedLargeImage, allocationLimit, delay};
 #else
-        constexpr qint64 allocationLimit = LargeImageAllocationLimit;
+        return {path, approvedLargeImage, LargeImageAllocationLimit};
 #endif
-        return {path, approvedLargeImage, allocationLimit};
     }
 
     void recordScheduledDecode(const QString &path, const bool scheduled)
@@ -1651,6 +1516,7 @@ class ViewerWindowImplementation final : public QWidget
         updateInformation();
     }
 
+    ViewerWindowConfiguration configuration_;
     QImage image_;
     std::unique_ptr<PlatformServices> platformServices_;
     ImageLoading::Loader imageLoader_;
@@ -1691,8 +1557,9 @@ class ViewerWindowImplementation final : public QWidget
 
 struct ViewerWindow
 {
-    ViewerWindow(const QString &initialPath, std::unique_ptr<PlatformServices> platformServices)
-        : implementation(initialPath, std::move(platformServices))
+    ViewerWindow(const QString &initialPath, std::unique_ptr<PlatformServices> platformServices,
+                 ViewerWindowConfiguration configuration)
+        : implementation(initialPath, std::move(platformServices), std::move(configuration))
     {
     }
 
@@ -1703,12 +1570,12 @@ struct ViewerWindow
 ViewerWindowTestControl::ViewerWindowTestControl(ViewerWindow &window) : window_(window) {}
 
 namespace {
-QWidget *testTarget(ViewerWindowImplementation &window, const ViewerWindowTestTarget target)
+QWidget *testTarget(ViewerWindowImplementation &window, const ViewerWindowTestRegion target)
 {
-    if (target == ViewerWindowTestTarget::ViewingSurface) {
+    if (target == ViewerWindowTestRegion::ViewingSurface) {
         return window.findChild<QWidget *>(QStringLiteral("viewingSurface"));
     }
-    if (target == ViewerWindowTestTarget::Viewport) {
+    if (target == ViewerWindowTestRegion::ImageViewport) {
         return window.findChild<QScrollArea *>()->viewport();
     }
     return &window;
@@ -1720,23 +1587,33 @@ void ViewerWindowTestControl::capture(const QString &path) const
     window_.implementation.grab().save(path, "PNG");
 }
 
-QRect ViewerWindowTestControl::rect(const ViewerWindowTestTarget target) const
+ViewerWindowTestSnapshot ViewerWindowTestControl::snapshot(const QString &decodePath) const
+{
+    return window_.implementation.testSnapshot(decodePath);
+}
+
+void ViewerWindowTestControl::perform(const ViewerWindowTestOperation operation)
+{
+    window_.implementation.performTestOperation(operation);
+}
+
+QRect ViewerWindowTestControl::rect(const ViewerWindowTestRegion target) const
 {
     return testTarget(window_.implementation, target)->rect();
 }
 
-QRect ViewerWindowTestControl::availableScreenGeometry(const ViewerWindowTestTarget target) const
+QRect ViewerWindowTestControl::availableScreenGeometry(const ViewerWindowTestRegion target) const
 {
     return testTarget(window_.implementation, target)->screen()->availableGeometry();
 }
 
-QPoint ViewerWindowTestControl::mapToGlobal(const ViewerWindowTestTarget target,
+QPoint ViewerWindowTestControl::mapToGlobal(const ViewerWindowTestRegion target,
                                             const QPoint &point) const
 {
     return testTarget(window_.implementation, target)->mapToGlobal(point);
 }
 
-void ViewerWindowTestControl::sendEvent(const ViewerWindowTestTarget target, QEvent &event) const
+void ViewerWindowTestControl::sendEvent(const ViewerWindowTestRegion target, QEvent &event) const
 {
     QApplication::sendEvent(testTarget(window_.implementation, target), &event);
 }
@@ -1757,84 +1634,6 @@ void ViewerWindowTestControl::resize(const int width, const int height)
 
 void ViewerWindowTestControl::close() { window_.implementation.close(); }
 
-void ViewerWindowTestControl::triggerAction(const QString &objectName)
-{
-    if (QAction *action = window_.implementation.findChild<QAction *>(objectName)) {
-        action->trigger();
-    }
-}
-
-void ViewerWindowTestControl::focusDetails()
-{
-    window_.implementation.findChild<QToolButton *>()->setFocus(Qt::OtherFocusReason);
-}
-
-void ViewerWindowTestControl::focusSkip()
-{
-    window_.implementation.findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))
-        ->setFocus(Qt::OtherFocusReason);
-}
-
-void ViewerWindowTestControl::toggleDetails()
-{
-    if (auto *button = window_.implementation.findChild<QToolButton *>()) {
-        button->toggle();
-    }
-}
-
-void ViewerWindowTestControl::approveLargeImage()
-{
-    window_.implementation.findChild<QPushButton *>(QStringLiteral("approveLargeImage"))->click();
-}
-
-void ViewerWindowTestControl::rejectLargeImage()
-{
-    window_.implementation.findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))->click();
-}
-
-#define FLICK_FORWARD_TEST_QUERY(return_type, name)                                               \
-    return_type ViewerWindowTestControl::name() const { return window_.implementation.name(); }
-
-FLICK_FORWARD_TEST_QUERY(bool, isLoading)
-FLICK_FORWARD_TEST_QUERY(qsizetype, cacheBytes)
-FLICK_FORWARD_TEST_QUERY(qsizetype, decodesInFlight)
-FLICK_FORWARD_TEST_QUERY(QByteArray, viewState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, uiState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, informationState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, informationDialogState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, feedbackState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, errorState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, primaryActionState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, presentationMotionContract)
-FLICK_FORWARD_TEST_QUERY(QByteArray, activePresentationTransition)
-FLICK_FORWARD_TEST_QUERY(QByteArray, largeImageState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, contextActions)
-FLICK_FORWARD_TEST_QUERY(QByteArray, contextMenuStructure)
-FLICK_FORWARD_TEST_QUERY(QByteArray, contextMenuGeometry)
-FLICK_FORWARD_TEST_QUERY(QByteArray, applicationMenuStructure)
-FLICK_FORWARD_TEST_QUERY(QByteArray, commandAvailability)
-FLICK_FORWARD_TEST_QUERY(QByteArray, quitActionState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, focusState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, accessibilityState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, settingsState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, settingsDialogStructure)
-FLICK_FORWARD_TEST_QUERY(QByteArray, settingsDialogGeometry)
-FLICK_FORWARD_TEST_QUERY(QByteArray, settingsDialogFocusOrder)
-FLICK_FORWARD_TEST_QUERY(QByteArray, windowGeometryState)
-FLICK_FORWARD_TEST_QUERY(QByteArray, presentationState)
-
-#undef FLICK_FORWARD_TEST_QUERY
-
-int ViewerWindowTestControl::decodeCount(const QString &path) const
-{
-    return window_.implementation.decodeCount(path);
-}
-
-void ViewerWindowTestControl::persistWindowGeometry()
-{
-    window_.implementation.persistWindowGeometry();
-}
-
 void ViewerWindowTestControl::applySettings(const Settings::Values &values)
 {
     window_.implementation.applyAcceptedSettingsForTest(values);
@@ -1845,27 +1644,6 @@ void ViewerWindowTestControl::setSettingsDialogValues(const Settings::Values &va
     window_.implementation.setSettingsDialogValuesForTest(values);
 }
 
-void ViewerWindowTestControl::resetTestSettings() { window_.implementation.resetTestSettings(); }
-
-void ViewerWindowTestControl::finishTestSettings(const bool accepted)
-{
-    window_.implementation.finishTestSettings(accepted);
-}
-
-void ViewerWindowTestControl::displayConfigurationChanged()
-{
-    window_.implementation.displayConfigurationChanged();
-}
-
-void ViewerWindowTestControl::focusViewingSurfaceForTest()
-{
-    window_.implementation.focusViewingSurfaceForTest();
-}
-
-void ViewerWindowTestControl::failExternalActionsForTest()
-{
-    window_.implementation.failExternalActionsForTest();
-}
 #endif
 
 void ViewerWindowDeleter::operator()(ViewerWindow *window) const
@@ -1874,9 +1652,11 @@ void ViewerWindowDeleter::operator()(ViewerWindow *window) const
 }
 
 ViewerWindowPtr createViewerWindow(const QString &initialPath,
-                                   std::unique_ptr<PlatformServices> platformServices)
+                                   std::unique_ptr<PlatformServices> platformServices,
+                                   ViewerWindowConfiguration configuration)
 {
-    return ViewerWindowPtr(new ViewerWindow(initialPath, std::move(platformServices)));
+    return ViewerWindowPtr(
+        new ViewerWindow(initialPath, std::move(platformServices), std::move(configuration)));
 }
 
 void installViewerWindowAccessibility()

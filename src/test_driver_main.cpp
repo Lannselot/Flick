@@ -44,7 +44,22 @@ int main(int argc, char *argv[])
     const QString initialPath = arguments.size() > 1 ? arguments.at(1) : QString{};
     auto platformServices = std::make_unique<TestPlatformServices>();
     TestPlatformServices *testPlatformServices = platformServices.get();
-    ViewerWindowPtr window = createViewerWindow(initialPath, std::move(platformServices));
+    ViewerWindowConfiguration configuration;
+    const qint64 cacheBudget = qEnvironmentVariableIntValue("FLICK_TEST_CACHE_BUDGET_BYTES");
+    if (cacheBudget > 0) configuration.cacheBudgetBytes = cacheBudget;
+    const qint64 allocationLimit =
+        qEnvironmentVariableIntValue("FLICK_TEST_LARGE_ALLOCATION_LIMIT_BYTES");
+    if (allocationLimit > 0) configuration.largeImageAllocationLimitBytes = allocationLimit;
+    if (qEnvironmentVariableIsSet("FLICK_TEST_FILE_PICKER_SELECTION"))
+        configuration.filePickerSelection = qEnvironmentVariable("FLICK_TEST_FILE_PICKER_SELECTION");
+    configuration.delayedDecodePath = qEnvironmentVariable("FLICK_TEST_DECODE_DELAY_PATH");
+    configuration.decodeDelayMilliseconds = qEnvironmentVariableIntValue("FLICK_TEST_DECODE_DELAY_MS");
+    const int loadingDelay =
+        qEnvironmentVariableIntValue("FLICK_TEST_LOADING_INDICATOR_DELAY_MS");
+    if (loadingDelay > 0) configuration.loadingIndicatorDelayMilliseconds = loadingDelay;
+    configuration.reducedMotion = qEnvironmentVariableIsSet("FLICK_TEST_REDUCED_MOTION");
+    ViewerWindowPtr window =
+        createViewerWindow(initialPath, std::move(platformServices), std::move(configuration));
     application.setFileOpenHandler(
         [&window](const QString &path) { openViewerWindowFile(*window, path); });
     showViewerWindow(*window);

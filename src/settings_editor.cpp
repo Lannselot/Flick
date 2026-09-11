@@ -250,69 +250,29 @@ void Editor::open(const Values &opening, const Values &defaultValues, PreviewOpe
 }
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
-QByteArray Editor::backgroundPickerTitle()
-{
-    return QDialog::tr("Viewing Surface Background").toUtf8();
-}
-
-QByteArray Editor::describe(const Values &values)
-{
-    return wheelActionName(values.wheelAction).toUtf8() + '|' +
-           values.background.name().toUtf8() + '|' +
-           (values.statusVisible ? "visible" : "hidden") + '|' +
-           QByteArray::number(values.cacheBudgetBytes) + '|' +
-           (values.restoreWindowGeometry ? "restore" : "forget");
-}
-
-std::optional<Values> Editor::parseTestValues(const QStringList &fields)
-{
-    if (fields.size() != 5) {
-        return std::nullopt;
-    }
-    return Values{wheelActionFromName(fields.at(0)),
-                  QColor(fields.at(1)), fields.at(2).toInt() != 0,
-                  fields.at(3).toLongLong() * 1024 * 1024, fields.at(4).toInt() != 0};
-}
-
-QByteArray Editor::dialogStructure() const
+DialogSnapshot Editor::testSnapshot() const
 {
     const auto &state = *implementation_;
+    DialogSnapshot snapshot;
+    snapshot.backgroundPickerTitle = QDialog::tr("Viewing Surface Background");
     if (state.dialog_ == nullptr) {
-        return QByteArrayLiteral("closed");
+        return snapshot;
     }
-    QStringList descriptions;
+    snapshot.open = true;
+    snapshot.size = state.dialog_->size();
     for (const QGroupBox *group : state.dialog_->findChildren<QGroupBox *>()) {
-        QStringList controls;
+        DialogGroup groupSnapshot{group->title(), {}};
         for (const QWidget *child :
              group->findChildren<QWidget *>(QString{}, Qt::FindDirectChildrenOnly)) {
             if (!child->accessibleName().isEmpty()) {
-                controls.append(child->accessibleName());
+                groupSnapshot.controls.append(child->accessibleName());
             }
         }
-        descriptions.append(group->title() + QLatin1Char('[') + controls.join(QLatin1Char('|')) +
-                            QLatin1Char(']'));
+        snapshot.groups.append(groupSnapshot);
     }
-    const QStringList labels{state.buttons_->button(QDialogButtonBox::Reset)->text(),
-                             state.buttons_->button(QDialogButtonBox::Cancel)->text(),
-                             state.buttons_->button(QDialogButtonBox::Apply)->text()};
-    return (descriptions + labels).join(QLatin1Char('|')).toUtf8();
-}
-
-QByteArray Editor::dialogGeometry() const
-{
-    const auto *dialog = implementation_->dialog_;
-    return dialog == nullptr ? QByteArrayLiteral("0x0")
-                             : QByteArray::number(dialog->width()) + 'x' +
-                                   QByteArray::number(dialog->height());
-}
-
-QByteArray Editor::dialogFocusOrder() const
-{
-    const auto &state = *implementation_;
-    if (state.dialog_ == nullptr || state.wheel_ == nullptr) {
-        return {};
-    }
-    QStringList names;
+    snapshot.buttons = {state.buttons_->button(QDialogButtonBox::Reset)->text(),
+                        state.buttons_->button(QDialogButtonBox::Cancel)->text(),
+                        state.buttons_->button(QDialogButtonBox::Apply)->text()};
     const QWidget *widget = state.wheel_;
     do {
         if (widget->focusPolicy() != Qt::NoFocus) {
@@ -323,12 +283,12 @@ QByteArray Editor::dialogFocusOrder() const
                 }
             }
             if (!name.isEmpty()) {
-                names.append(name);
+                snapshot.focusOrder.append(name);
             }
         }
         widget = widget->nextInFocusChain();
     } while (widget != state.wheel_ && widget != nullptr);
-    return names.join(QLatin1Char('|')).toUtf8();
+    return snapshot;
 }
 
 void Editor::setTestValues(const Values &values)

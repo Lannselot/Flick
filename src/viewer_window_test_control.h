@@ -2,18 +2,91 @@
 
 #pragma once
 
+#include "image_information.h"
 #include "settings_editor.h"
+#include "viewing_surface.h"
 
-#include <QByteArray>
+#include <QList>
 #include <QPoint>
 #include <QRect>
+#include <QSize>
 #include <QString>
 
 class ViewerWindow;
 class QEvent;
 class QKeyEvent;
 
-enum class ViewerWindowTestTarget { Window, ViewingSurface, Viewport };
+enum class ViewerWindowTestRegion { Window, ViewingSurface, ImageViewport };
+enum class ViewerWindowTestOperation {
+    OpenSettings, QuitApplication, SelectWheelZoom, FocusErrorDetails, FocusLargeImageSkip,
+    ToggleErrorDetails, ApproveLargeImage, RejectLargeImage, FocusViewingSurface,
+    PersistWindowGeometry, ResetSettings, ApplySettingsDialog, CancelSettingsDialog,
+    DisplayConfigurationChanged, FailExternalActions
+};
+
+struct TestActionSnapshot
+{
+    QString text;
+    QString shortcut;
+    bool enabled = false;
+    bool separator = false;
+    QList<TestActionSnapshot> children;
+};
+
+enum class TestFocusOwner { Menu, Dialog, ViewingSurface, Other };
+
+struct PerformanceSnapshot {
+    bool loading = false;
+    qsizetype cacheBytes = 0;
+    qsizetype decodesInFlight = 0;
+    int requestedPathDecodeCount = 0;
+};
+struct ViewSnapshot {
+    double zoom = 0.0;
+    QPoint scrollPosition;
+    QSize viewportSize;
+    QPoint imageOrigin;
+    bool fullScreen = false;
+    bool statusVisible = false;
+    bool pointerHidden = false;
+    QString statusText;
+    QSize windowSize;
+};
+struct PresentationCapabilitySnapshot {
+    QString informationText;
+    ImageInformation::DialogState informationDialog;
+    ViewingSurface::PresentationSnapshot presentation;
+    QSize pendingLargeImageSize;
+};
+struct CommandSurfaceSnapshot {
+    QList<TestActionSnapshot> imageActions;
+    QList<TestActionSnapshot> contextMenu;
+    QList<TestActionSnapshot> applicationMenu;
+    QRect contextMenuGeometry;
+    QRect contextMenuScreenGeometry;
+    bool quitActionShared = false;
+    bool quitActionHasStandardRole = false;
+    bool quitActionHasStandardShortcut = false;
+};
+struct AccessibilitySnapshot {
+    TestFocusOwner focusOwner = TestFocusOwner::Other;
+    QString accessibleImageName;
+    bool accessibleImageHasGraphicRole = false;
+    QString accessibleImageDescription;
+    QList<TestActionSnapshot> accessibleActions;
+};
+struct SettingsSnapshot {
+    Settings::Values settings;
+    Settings::DialogSnapshot settingsDialog;
+};
+struct ViewerWindowTestSnapshot {
+    PerformanceSnapshot performance;
+    ViewSnapshot view;
+    PresentationCapabilitySnapshot presentation;
+    CommandSurfaceSnapshot commands;
+    AccessibilitySnapshot accessibility;
+    SettingsSnapshot settings;
+};
 
 // The single test-only seam through which the process adapter inspects and controls a window.
 class ViewerWindowTestControl
@@ -21,57 +94,18 @@ class ViewerWindowTestControl
 public:
     explicit ViewerWindowTestControl(ViewerWindow &window);
 
+    ViewerWindowTestSnapshot snapshot(const QString &decodePath = {}) const;
+    void perform(ViewerWindowTestOperation operation);
     void capture(const QString &path) const;
-    QRect rect(ViewerWindowTestTarget target) const;
-    QRect availableScreenGeometry(ViewerWindowTestTarget target) const;
-    QPoint mapToGlobal(ViewerWindowTestTarget target, const QPoint &point) const;
-    void sendEvent(ViewerWindowTestTarget target, QEvent &event) const;
+    QRect rect(ViewerWindowTestRegion region) const;
+    QRect availableScreenGeometry(ViewerWindowTestRegion region) const;
+    QPoint mapToGlobal(ViewerWindowTestRegion region, const QPoint &point) const;
+    void sendEvent(ViewerWindowTestRegion region, QEvent &event) const;
     void sendKeyEvent(QKeyEvent &event, bool forceWindow) const;
     void resize(int width, int height);
     void close();
-    void triggerAction(const QString &objectName);
-    void focusDetails();
-    void focusSkip();
-    void toggleDetails();
-    void approveLargeImage();
-    void rejectLargeImage();
-    bool isLoading() const;
-    qsizetype cacheBytes() const;
-    qsizetype decodesInFlight() const;
-    int decodeCount(const QString &path) const;
-    QByteArray viewState() const;
-    QByteArray uiState() const;
-    QByteArray informationState() const;
-    QByteArray informationDialogState() const;
-    QByteArray feedbackState() const;
-    QByteArray errorState() const;
-    QByteArray primaryActionState() const;
-    QByteArray presentationMotionContract() const;
-    QByteArray activePresentationTransition() const;
-    QByteArray largeImageState() const;
-    QByteArray contextActions() const;
-    QByteArray contextMenuStructure() const;
-    QByteArray contextMenuGeometry() const;
-    QByteArray applicationMenuStructure() const;
-    QByteArray commandAvailability() const;
-    QByteArray quitActionState() const;
-    QByteArray focusState() const;
-    QByteArray accessibilityState() const;
-    QByteArray settingsState() const;
-    QByteArray settingsDialogStructure() const;
-    QByteArray settingsDialogGeometry() const;
-    QByteArray settingsDialogFocusOrder() const;
-    QByteArray windowGeometryState() const;
-    QByteArray presentationState() const;
-
-    void persistWindowGeometry();
     void applySettings(const Settings::Values &values);
     void setSettingsDialogValues(const Settings::Values &values);
-    void resetTestSettings();
-    void finishTestSettings(bool accepted);
-    void displayConfigurationChanged();
-    void focusViewingSurfaceForTest();
-    void failExternalActionsForTest();
 
 private:
     ViewerWindow &window_;
