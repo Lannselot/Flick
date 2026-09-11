@@ -63,6 +63,7 @@ struct CommandSurfaceSnapshot {
     QList<TestActionSnapshot> applicationMenu;
     QRect contextMenuGeometry;
     QRect contextMenuScreenGeometry;
+    bool applicationMenuVisible = false;
     bool quitActionShared = false;
     bool quitActionHasStandardRole = false;
     bool quitActionHasStandardShortcut = false;

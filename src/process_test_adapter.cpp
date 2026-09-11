@@ -329,6 +329,12 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fprintf(stdout, "%s\n", describeActions(window.snapshot().commands.applicationMenu, true).constData());
                 fflush(stdout);
                 return;
+            } else if (input.startsWith("ApplicationMenuVisibility")) {
+                fprintf(stdout, "%s\n", window.snapshot().commands.applicationMenuVisible
+                                                   ? "visible"
+                                                   : "hidden");
+                fflush(stdout);
+                return;
             } else if (input.startsWith("CommandAvailability")) {
                 QList<QByteArray> entries;
                 for (const auto &action : window.snapshot().commands.contextMenu)

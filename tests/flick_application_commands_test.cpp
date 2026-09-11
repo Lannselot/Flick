@@ -107,7 +107,7 @@ void FlickApplicationCommandsTest::exposesGroupedCommandSurfacesWithoutNavigatio
              QByteArrayLiteral("Open Image|---|Fit to Window|Actual Size|Zoom In|Zoom Out|Toggle "
                                "Fullscreen|---|Rotate Left|Rotate Right|Pause or Resume "
                                "Animation|Information|---|Copy Image|Copy Path|Show in File "
-                               "Manager|---|Settings|---|Quit Flick"));
+                               "Manager|---|Settings|---|Quit"));
     QVERIFY(!context.contains("Previous Image"));
     QVERIFY(!context.contains("Next Image"));
 
@@ -130,11 +130,11 @@ void FlickApplicationCommandsTest::quitCommandIsSharedAndExitsCleanly()
 
     const QByteArray context =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("ContextMenuStructure"));
-    QVERIFY(context.endsWith("Settings|---|Quit Flick"));
+    QVERIFY(context.endsWith("Settings|---|Quit"));
 
     const QByteArray application =
         sendQueryAndWaitForReply(flick, QByteArrayLiteral("ApplicationMenuStructure"));
-    QVERIFY(application.contains("File[Open Image|Settings|Quit Flick]"));
+    QVERIFY(application.contains("File[Open Image|Settings|Quit]"));
     QCOMPARE(sendQueryAndWaitForReply(flick, QByteArrayLiteral("QuitActionState")),
              QByteArrayLiteral("shared|standard-role|standard-shortcut"));
 

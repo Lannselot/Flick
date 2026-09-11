@@ -7,12 +7,12 @@ application menu or the viewing-surface context menu on every supported platform
 
 **Status:** resolved
 
-- [x] The File menu includes Quit Flick on Linux as well as macOS.
+- [x] The File menu includes Quit on Linux as well as macOS.
 - [x] The action uses the platform-standard Quit role and shortcut, including the appropriate
       Control or Command modifier.
 - [x] Triggering the action exits the current Flick process cleanly through the application command
       rather than bypassing normal shutdown behavior.
-- [x] Quit Flick is the final context-menu command, separated from Preferences and the image-related
+- [x] Quit is the final context-menu command, separated from Preferences and the image-related
       command groups.
 - [x] The File menu and context menu share one action and one shutdown path rather than maintaining
       duplicated command state or behavior.

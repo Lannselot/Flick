@@ -298,6 +298,7 @@ class ViewerWindowImplementation final : public QWidget
     {
         openDirectoryBacked(path);
         showNormal();
+        applicationMenuBar_->show();
         raise();
         activateWindow();
     }
@@ -357,6 +358,7 @@ class ViewerWindowImplementation final : public QWidget
         QScreen *screen = contextMenu_->screen();
         snapshot.commands.contextMenuScreenGeometry =
             screen != nullptr ? screen->availableGeometry() : QRect{};
+        snapshot.commands.applicationMenuVisible = applicationMenuBar_->isVisible();
 
         QAction *quitAction = commandAction("applicationQuitAction");
         bool fileMenuContainsAction = false;
@@ -645,7 +647,7 @@ class ViewerWindowImplementation final : public QWidget
 
     void addCommandSurfaces(QAction *settingsAction, QVBoxLayout *windowLayout)
     {
-        auto *quitAction = new QAction(tr("Quit Flick"), this);
+        auto *quitAction = new QAction(tr("Quit"), this);
         quitAction->setObjectName(QStringLiteral("applicationQuitAction"));
         quitAction->setMenuRole(QAction::QuitRole);
         quitAction->setShortcut(QKeySequence::Quit);
@@ -966,11 +968,7 @@ class ViewerWindowImplementation final : public QWidget
         }
         const QImage content = rotatedImage();
         clipboard->setImage(content);
-        if (clipboard->image() != content) {
-            showFeedback(tr("Could not copy the current image"));
-        } else {
-            showFeedback(tr("Image copied"));
-        }
+        showFeedback(tr("Image copied"));
     }
 
     void revealCurrentFile()
@@ -997,6 +995,7 @@ class ViewerWindowImplementation final : public QWidget
         if (isFullScreen()) {
             leaveFullscreen();
         } else {
+            applicationMenuBar_->hide();
             showFullScreen();
             surface_->enteredFullscreen();
         }
@@ -1005,6 +1004,7 @@ class ViewerWindowImplementation final : public QWidget
     void leaveFullscreen()
     {
         showNormal();
+        applicationMenuBar_->show();
         viewport_->viewport()->unsetCursor();
         showStatus(false);
     }

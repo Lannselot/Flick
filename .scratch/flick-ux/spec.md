@@ -126,7 +126,7 @@ Organize viewing actions into five short groups:
 5. Preferences
 
 Unavailable commands stay visible and disabled. Previous and Next are taught through shortcuts and
-are not repeated as menu rows. **Quit Flick** follows as the final context-menu command, separated
+are not repeated as menu rows. **Quit** follows as the final context-menu command, separated
 from Preferences, and invokes the same application action exposed by the File menu.
 
 ### Focus and Escape
@@ -141,9 +141,9 @@ image.
 
 ### Fullscreen
 
-Fullscreen contains the same viewing surface and no control bar. Pointer motion reveals the status
-overlay. On first entry, briefly teach **F11 or Esc to exit fullscreen**. The context menu remains
-available.
+Fullscreen contains only the viewing surface: the application menu and any control bar are hidden.
+Pointer motion reveals the status overlay. On first entry, briefly teach **F11 or Esc to exit
+fullscreen**. The context menu remains available.
 
 ## Dialogs
 
