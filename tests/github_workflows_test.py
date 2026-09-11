@@ -28,6 +28,14 @@ def require_actions_pinned(path: str) -> None:
             raise AssertionError(f"{path} does not pin {action} to a full commit SHA")
 
 
+def require_portable_artifact_names(path: str) -> None:
+    contents = (root / path).read_text(encoding="utf-8")
+    if "github.ref_name" in contents:
+        raise AssertionError(
+            f"{path} uses github.ref_name in an artifact name; branch names may contain '/'"
+        )
+
+
 require(
     ".github/workflows/ci.yml",
     [
@@ -79,6 +87,7 @@ require(
     ],
 )
 require_actions_pinned(".github/workflows/release-linux.yml")
+require_portable_artifact_names(".github/workflows/release-linux.yml")
 require(
     ".github/workflows/release-macos.yml",
     [
@@ -97,6 +106,7 @@ require(
     ],
 )
 require_actions_pinned(".github/workflows/release-macos.yml")
+require_portable_artifact_names(".github/workflows/release-macos.yml")
 require(
     ".github/dependabot.yml",
     [
