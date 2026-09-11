@@ -254,8 +254,14 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    CTest[CTest] --> Test[flick_application_test]
-    Test -->|QProcess| App[Отдельный процесс Flick]
+    CTest[CTest] --> Browsing[application.browsing]
+    CTest --> Presentation[application.presentation]
+    CTest --> Settings[application.settings]
+    CTest --> Commands[application.commands]
+    CTest --> Animation[application.animation]
+    CTest --> Platform[application.platform]
+    Browsing & Presentation & Settings & Commands & Animation & Platform --> Support[application_process_test_support]
+    Support -->|QProcess| App[Отдельный процесс Flick]
 
     subgraph Isolated[Изолированное временное окружение]
         XDG[XDG config / data / cache / state / runtime]
@@ -263,15 +269,21 @@ flowchart LR
         Screenshot[window.png]
     end
 
-    Test --> Fixtures
+    Support --> Fixtures
     Fixtures --> App
-    Test -->|Left, Right, F11, mouse,<br/>Drop, Capture через stdin| Harness[Test harness]
+    Support -->|Left, Right, F11, mouse,<br/>Drop, Capture через stdin| Harness[Test harness]
     Harness --> App
     App -->|window.grab и save| Screenshot
-    Screenshot -->|загрузка как QImage| Test
-    Test --> Assertions[Проверка размера,<br/>цветов и состояния процесса]
+    Screenshot -->|загрузка как QImage| Support
+    Support --> Assertions[Проверка размера,<br/>цветов и состояния процесса]
     XDG --> App
 ```
+
+Шесть независимо запускаемых application suites разделены по возможностям: browsing,
+presentation, settings, commands, animation и platform. Общий
+`application_process_test_support` владеет запуском процесса, изолированным XDG-окружением,
+fixtures, транспортом команд, снимками и общими проверками. Инвентарь переноса сценариев
+зафиксирован в `tests/application-process-suite-inventory.md`.
 
 Тесты работают через границу настоящего приложения: запускают
 `flick_test_driver` в режиме `offscreen`, имитируют пользовательские события и

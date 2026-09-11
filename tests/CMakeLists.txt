@@ -25,15 +25,36 @@ target_link_libraries(browsing_sequence_test PRIVATE Qt6::Core Qt6::Test)
 target_compile_options(browsing_sequence_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME flick.browsing-sequence COMMAND browsing_sequence_test)
 
-qt_add_executable(flick_application_test
-    ${CMAKE_CURRENT_SOURCE_DIR}/flick_application_test.cpp
+add_library(flick_application_test_support STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/application_process_test_support.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/application_process_test_support.h
 )
-
-target_link_libraries(flick_application_test PRIVATE Qt6::Gui Qt6::Test)
-target_compile_options(flick_application_test PRIVATE -Wall -Wextra -Wpedantic)
-target_compile_definitions(flick_application_test PRIVATE
+target_link_libraries(flick_application_test_support PUBLIC Qt6::Gui Qt6::Test)
+target_compile_options(flick_application_test_support PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(flick_application_test_support PRIVATE
     FLICK_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
 )
+
+function(add_flick_application_suite capability)
+    set(target flick_application_${capability}_test)
+    qt_add_executable(${target}
+        ${CMAKE_CURRENT_SOURCE_DIR}/${target}.cpp
+    )
+    target_link_libraries(${target} PRIVATE flick_application_test_support)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME flick.application.${capability} COMMAND ${target})
+    set_tests_properties(flick.application.${capability} PROPERTIES
+        ENVIRONMENT "FLICK_EXECUTABLE=$<TARGET_FILE:flick_test_driver>;QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 60
+    )
+endfunction()
+
+add_flick_application_suite(browsing)
+add_flick_application_suite(presentation)
+add_flick_application_suite(settings)
+add_flick_application_suite(commands)
+add_flick_application_suite(animation)
+add_flick_application_suite(platform)
 
 qt_add_executable(flick_file_open_event_test
     ${CMAKE_CURRENT_SOURCE_DIR}/flick_file_open_event_test.cpp
@@ -45,12 +66,6 @@ target_compile_options(flick_file_open_event_test PRIVATE -Wall -Wextra -Wpedant
 add_test(NAME flick.file-open-event COMMAND flick_file_open_event_test)
 set_tests_properties(flick.file-open-event PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-)
-
-add_test(NAME flick.application COMMAND flick_application_test)
-set_tests_properties(flick.application PROPERTIES
-    ENVIRONMENT "FLICK_EXECUTABLE=$<TARGET_FILE:flick_test_driver>;QT_QPA_PLATFORM=offscreen"
-    TIMEOUT 60
 )
 
 qt_add_executable(flick_performance
