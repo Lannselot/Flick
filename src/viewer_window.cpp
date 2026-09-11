@@ -2,6 +2,7 @@
 #include "viewer_window.h"
 
 #include "flick_application.h"
+#include "image_information.h"
 #include "image_loading.h"
 #include "platform_services.h"
 #include "settings_editor.h"
@@ -20,7 +21,6 @@
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QCursor>
-#include <QDateTime>
 #include <QDialog>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -29,12 +29,10 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
-#include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QHash>
 #include <QKeyEvent>
 #include <QLabel>
-#include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -233,6 +231,8 @@ class ViewerWindowImplementation final : public QWidget
                          [this] { refreshDirectorySequence(); });
 
         settingsEditor_ = std::make_unique<Settings::Editor>(*this);
+        informationDialog_ = std::make_unique<ImageInformation::Dialog>(
+            *this, [this] { restoreViewingFocus(); });
         loadSettings();
 
         imageLoader_.setOutcomeHandler([this](ImageLoading::DecodeOutcome outcome) {
@@ -326,15 +326,15 @@ class ViewerWindowImplementation final : public QWidget
 
     QByteArray informationState() const
     {
-        return informationText_.toUtf8();
+        return informationDialog_->text().toUtf8();
     }
 
     QByteArray informationDialogState() const
     {
-        return informationDialog_ == nullptr
-                   ? QByteArrayLiteral("closed")
-                   : QByteArrayLiteral("open|") + QByteArray::number(informationDialog_->width()) +
-                         'x' + QByteArray::number(informationDialog_->height());
+        const ImageInformation::DialogState state = informationDialog_->state();
+        return !state.open ? QByteArrayLiteral("closed")
+                           : QByteArrayLiteral("open|") + QByteArray::number(state.size.width()) +
+                                 'x' + QByteArray::number(state.size.height());
     }
 
     void focusViewingSurfaceForTest()
@@ -630,10 +630,6 @@ class ViewerWindowImplementation final : public QWidget
 
     void keyPressEvent(QKeyEvent *event) override
     {
-        if (event->key() == Qt::Key_Escape && informationDialog_ != nullptr) {
-            informationDialog_->close();
-            return;
-        }
         if (event->key() == Qt::Key_F11) {
             toggleFullscreen();
             return;
@@ -1022,51 +1018,46 @@ class ViewerWindowImplementation final : public QWidget
         return action;
     }
 
-    QString imageInformation() const
+    ImageInformation::Snapshot imageInformationSnapshot() const
     {
         const QString selectedPath = browsingSequence_.selectedPath();
-        if (selectedPath.isEmpty()) {
-            return tr("No current image");
-        }
         const QFileInfo file(selectedPath);
         QString format = file.suffix().toUpper();
         if (format == QStringLiteral("JPG")) {
             format = QStringLiteral("JPEG");
         }
         const bool displayed = !image_.isNull() && currentImage_.path == selectedPath;
-        const QString dimensions =
-            displayed ? tr("%1 × %2").arg(image_.width()).arg(image_.height())
-            : surface_->state() == ViewingSurface::State::Error ? tr("Unavailable")
-                                                                : tr("Loading…");
-        const QString animation = !displayed                        ? tr("Unavailable")
-                                  : currentImage_.frames.size() < 2 ? tr("Static image")
-                                  : animationPlayback_ == AnimationPlayback::Paused
-                                      ? tr("Paused")
-                                  : animationPlayback_ == AnimationPlayback::Finished
-                                      ? tr("Finished")
-                                                                    : tr("Playing");
-        return tr("Path: %1\nFormat: %2\nDimensions: %3\nSize: %4 bytes\n"
-                  "Modified: %5\nZoom: %6%\nRotation: %7°\nAnimation: "
-                  "%8\nPosition: %9 / %10")
-            .arg(file.absoluteFilePath(), format)
-            .arg(dimensions)
-            .arg(file.size())
-            .arg(QLocale().toString(file.lastModified(), QLocale::ShortFormat))
-            .arg(qRound(zoom_ * 100))
-            .arg(rotationQuarterTurns_ * 90)
-            .arg(animation)
-            .arg(browsingSequence_.selectedIndex() + 1)
-            .arg(browsingSequence_.paths().size());
+        const auto availability = displayed
+                                      ? ImageInformation::DecodedAvailability::Available
+                                  : surface_->state() == ViewingSurface::State::Error
+                                      ? ImageInformation::DecodedAvailability::Unavailable
+                                      : ImageInformation::DecodedAvailability::Loading;
+        ImageInformation::AnimationState animation = ImageInformation::AnimationState::Unavailable;
+        if (displayed && currentImage_.frames.size() < 2) {
+            animation = ImageInformation::AnimationState::Static;
+        } else if (displayed && animationPlayback_ == AnimationPlayback::Paused) {
+            animation = ImageInformation::AnimationState::Paused;
+        } else if (displayed && animationPlayback_ == AnimationPlayback::Finished) {
+            animation = ImageInformation::AnimationState::Finished;
+        } else if (displayed) {
+            animation = ImageInformation::AnimationState::Playing;
+        }
+        return {.path = selectedPath.isEmpty() ? QString{} : file.absoluteFilePath(),
+                .format = format,
+                .fileSize = file.size(),
+                .modified = file.lastModified(),
+                .decodedAvailability = availability,
+                .dimensions = displayed ? image_.size() : QSize{},
+                .zoomPercent = qRound(zoom_ * 100),
+                .rotationDegrees = rotationQuarterTurns_ * 90,
+                .animationState = animation,
+                .position = browsingSequence_.selectedIndex() + 1,
+                .sequenceSize = static_cast<int>(browsingSequence_.paths().size())};
     }
 
     void updateInformation()
     {
-        if (informationDialog_ == nullptr) {
-            return;
-        }
-        informationText_ = imageInformation();
-        informationFacts_->setText(informationText_);
-        informationDialog_->adjustSize();
+        informationDialog_->update(imageInformationSnapshot());
     }
 
     void showInformation()
@@ -1074,39 +1065,7 @@ class ViewerWindowImplementation final : public QWidget
         if (browsingSequence_.selectedIndex() < 0 || image_.isNull()) {
             return;
         }
-        if (informationDialog_ != nullptr) {
-            informationDialog_->raise();
-            informationDialog_->activateWindow();
-            return;
-        }
-        informationText_ = imageInformation();
-        informationDialog_ = new QDialog(this, Qt::Tool);
-        informationDialog_->setAttribute(Qt::WA_DeleteOnClose);
-        informationDialog_->setModal(false);
-        informationDialog_->setWindowTitle(tr("Image Information"));
-        informationDialog_->setMaximumSize(480, 320);
-        auto *layout = new QVBoxLayout(informationDialog_);
-        informationFacts_ = new QLabel(informationText_, informationDialog_);
-        informationFacts_->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                                   Qt::TextSelectableByKeyboard);
-        informationFacts_->setWordWrap(true);
-        informationFacts_->setAccessibleName(tr("Current image information"));
-        auto *factsViewport = new QScrollArea(informationDialog_);
-        factsViewport->setWidgetResizable(true);
-        factsViewport->setFrameShape(QFrame::NoFrame);
-        factsViewport->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        factsViewport->setWidget(informationFacts_);
-        factsViewport->setMinimumSize(360, 180);
-        layout->addWidget(factsViewport);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, informationDialog_);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, informationDialog_, &QDialog::close);
-        layout->addWidget(buttons);
-        informationDialog_->show();
-        QObject::connect(informationDialog_, &QDialog::finished, this, [this] {
-            informationDialog_ = nullptr;
-            informationFacts_ = nullptr;
-            QTimer::singleShot(0, this, [this] { restoreViewingFocus(); });
-        });
+        informationDialog_->open(imageInformationSnapshot());
     }
 
     bool externalActionCanRun(const QString &failureMessage)
@@ -1384,7 +1343,7 @@ class ViewerWindowImplementation final : public QWidget
         }
         commandAction("viewerAnimationAction")->setEnabled(currentImage_.frames.size() > 1);
         updateInformation();
-        if (informationDialog_ == nullptr) {
+        if (!informationDialog_->isOpen()) {
             restoreViewingFocus();
         }
         setWindowTitle(tr("Flick — %1").arg(QFileInfo(path).fileName()));
@@ -1745,9 +1704,7 @@ class ViewerWindowImplementation final : public QWidget
     bool restoreWindowGeometry_ = false;
     QColorSpace displayColorSpace_{QColorSpace::SRgb};
     QList<QAction *> imageActions_;
-    QString informationText_;
-    QDialog *informationDialog_ = nullptr;
-    QLabel *informationFacts_ = nullptr;
+    std::unique_ptr<ImageInformation::Dialog> informationDialog_;
     QMenuBar *applicationMenuBar_ = nullptr;
     QMenu *contextMenu_ = nullptr;
     std::unique_ptr<Settings::Editor> settingsEditor_;
