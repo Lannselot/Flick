@@ -23,27 +23,24 @@ documentation, and evidence that no user-visible or performance behavior changed
 
 ## Answer
 
-`ViewerWindow` is contracted to coordination work. Settings test parsing and storage formatting now
-stay with `Settings::Editor` and `ProcessTestAdapter`; production excludes the remaining test-only
-formatting path. Command-surface assembly remains in the window because it encodes shared-action,
-menu-role, grouping, and focus-restoration policy and extracting it would create a shallow wrapper.
+`ViewerWindow` is contracted to coordination work. Process command parsing and serialization live
+only in `ProcessTestAdapter`; typed snapshots and semantic operations cross the test seam. Settings
+owns its editor and accepted-value storage without knowing the process protocol. Command-surface
+assembly remains in the window because it encodes shared-action, menu-role, grouping, and
+focus-restoration policy and extracting it would create a shallow wrapper.
 
 Architecture documentation now records Settings, Image Information, and test-adapter ownership.
-Dedicated contracts protect the documented ownership, keep native UX validation ticket 06 open,
-and verify both source-list and linked-symbol exclusion of the test adapter from production.
+Dedicated contracts protect the documented ownership, reject renamed protocol/widget coupling,
+keep native UX validation ticket 06 open, and verify both source-list and linked-symbol exclusion of
+the test adapter from production.
 
-Production and test-driver targets built successfully. The complete 18-test CTest suite passed in
-47.03 seconds, including `flick.performance-smoke`. Final independent Standards and Spec reviews
-reported no findings. Native UX validation ticket 06 remains unchanged and `ready-for-human`.
+Production and test-driver targets build successfully, and the complete 18-test CTest suite remains
+the compatibility gate. Native UX validation ticket 06 remains unchanged and `ready-for-human`.
 
-## Review reopening
+## Comments
 
-A subsequent review found the test command protocol still distributed across `ViewerWindow`, its
-test-control interface, and Settings. Ticket 04 is reopened. This ticket remains blocked until the
-adapter owns parsing and serialization, the window seam uses typed capability snapshots and
-semantic operations, architecture checks protect that contract, and a fresh two-axis review passes.
-
-The reopened contract is now satisfied: presentation controls cross the seam by semantic action
-role, Settings exposes typed contract facts rather than protocol-shaped dialog descriptions, and
-the adapter alone formats all process replies. Strengthened architecture checks protect these
-boundaries, and the fresh Standards and Spec reviews reported no findings.
+- The first contraction review was superseded after a subsequent review found protocol ownership
+  still distributed across the window, test-control interface, and Settings.
+- The follow-up moved serialization fully into the adapter, replaced forwarding methods with typed
+  capability snapshots and semantic operations, and strengthened the architecture guard before
+  closing the contract again.

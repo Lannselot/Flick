@@ -1317,9 +1317,7 @@ class ViewerWindowImplementation final : public QWidget
 
     void setViewportZoom(const double zoom)
     {
-        zoom_ = std::clamp(zoom, 0.01, 64.0);
-        renderImage();
-        updateInformation();
+        applyZoom(zoom);
         scheduleCenterView();
     }
 
@@ -1328,10 +1326,15 @@ class ViewerWindowImplementation final : public QWidget
         if (image_.isNull()) {
             return;
         }
+        applyZoom(zoom);
+        showStatus(false);
+    }
+
+    void applyZoom(const double zoom)
+    {
         zoom_ = std::clamp(zoom, 0.01, 64.0);
         renderImage();
         updateInformation();
-        showStatus(false);
     }
 
     void setZoomCentered(const double zoom)

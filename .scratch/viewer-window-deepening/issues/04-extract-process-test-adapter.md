@@ -30,27 +30,20 @@ dispatcher or stdin protocol.
       operations outside the adapter instead of merely checking that its source is absent from the
       production target.
 
-## Review reopening
+## Answer
 
-Independent review found that the adapter owns stdin dispatch but not the complete protocol. Query
-serialization remains in the window, Settings still parses and formats test values, and the window
-test-control interface mirrors dozens of protocol queries and individual widgets. The completed
-criteria above remain checked; the incomplete contract criteria are reopened and block final
-contraction.
+The adapter now owns command matching, argument parsing, reply serialization, screenshots, and
+synthetic input. Inspection crosses one window seam as typed capability snapshots; controls use
+semantic operations and presentation action roles rather than widget names. Settings exposes typed
+values, and deterministic environment configuration is interpreted during test-driver wiring.
 
-## Implementation sequence
+The process protocol remained stable throughout the expand–migrate–contract sequence. Architecture
+checks cover production exclusion, typed ownership, renamed protocol serializers, widget-specific
+control declarations, and line-protocol output outside the adapter.
 
-1. Introduce typed snapshots for the capability families named in the specification alongside the
-   current forwarding interface; keep every process command green.
-2. Move protocol response formatting into the adapter one capability family at a time, then remove
-   the corresponding string-description methods.
-3. Replace widget-named controls with semantic action-role operations and migrate the adapter.
-4. Move Settings test-value parsing and protocol formatting into the adapter; retain only typed
-   Settings values across the seam.
-5. Move deterministic environment interpretation to test-driver wiring or convert it to typed
-   injected configuration before window construction.
-6. Contract all forwarding compatibility methods and strengthen the architecture test before
-   requesting final review.
+## Comments
 
-Each step must preserve the running-process protocol so the already split application suites remain
-green throughout the migration.
+- An independent review reopened this ticket after the first extraction because stdin dispatch had
+  moved but query serialization, Settings parsing, and widget-shaped controls remained distributed.
+- The reopened criteria were completed in the follow-up extraction and verified through all split
+  running-process suites.

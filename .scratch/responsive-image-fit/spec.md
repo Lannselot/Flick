@@ -1,6 +1,6 @@
 # Responsive image fitting
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## Problem
 
@@ -46,15 +46,15 @@ existing product behavior; this correction must not silently redefine rotation o
 
 ## Acceptance criteria
 
-- [ ] Starting empty, resizing or maximizing the window, and then opening a large image uses the
+- [x] Starting empty, resizing or maximizing the window, and then opening a large image uses the
       final displayed viewport for the initial Auto scale.
-- [ ] Enlarging and shrinking the window recomputes the scale while Auto is active, capped at 100%.
-- [ ] Fit to Window tracks subsequent viewport changes and may enlarge a small image beyond 100%.
-- [ ] Actual Size and manual zoom remain numerically stable across window and fullscreen changes.
-- [ ] Opening and navigating to another image restore Auto behavior.
-- [ ] Images remain centered and aspect-correct; unavoidable letterboxing is not treated as a
+- [x] Enlarging and shrinking the window recomputes the scale while Auto is active, capped at 100%.
+- [x] Fit to Window tracks subsequent viewport changes and may enlarge a small image beyond 100%.
+- [x] Actual Size and manual zoom remain numerically stable across window and fullscreen changes.
+- [x] Opening and navigating to another image restore Auto behavior.
+- [x] Images remain centered and aspect-correct; unavoidable letterboxing is not treated as a
       failure to fit.
-- [ ] Existing zoom anchoring, panning, rotation, animation, high-zoom allocation, status, and image
+- [x] Existing zoom anchoring, panning, rotation, animation, high-zoom allocation, status, and image
       information behavior remain covered and green.
 
 ## Testing strategy
