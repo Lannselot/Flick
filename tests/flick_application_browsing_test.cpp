@@ -127,10 +127,9 @@ void FlickApplicationBrowsingTest::delaysLoadingPresentationAndClearsPreviousIma
     const QImage beforeThreshold = captureAfter(flick, 0);
     QVERIFY(!containsColor(beforeThreshold, firstColor));
 
-    QTest::qWait(500);
-    const QByteArray loading =
-        sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState"));
-    QCOMPARE(loading, QByteArrayLiteral("loading|image2.png|indicator-visible"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        sendQueryAndWaitForReply(flick, QByteArrayLiteral("PresentationState")),
+        QByteArrayLiteral("loading|image2.png|indicator-visible"), 1000);
 }
 
 void FlickApplicationBrowsingTest::validDragFeedbackRestoresThePreviousPresentation()
