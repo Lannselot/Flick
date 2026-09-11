@@ -4,9 +4,7 @@
 
 #include <QColor>
 #include <QByteArray>
-#include <QStringList>
 #include <QSize>
-#include <QList>
 #include <QtTypes>
 
 #include <functional>
@@ -33,19 +31,12 @@ struct Values
 };
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
-struct DialogGroup
-{
-    QString title;
-    QStringList controls;
-};
-
 struct DialogSnapshot
 {
     bool open = false;
     QSize size;
-    QList<DialogGroup> groups;
-    QStringList buttons;
-    QStringList focusOrder;
+    bool structureMatchesContract = false;
+    bool focusOrderMatchesContract = false;
     QString backgroundPickerTitle;
 };
 #endif
@@ -66,12 +57,12 @@ class Editor final
     static QByteArray readWindowGeometry();
     static void persistAccepted(const Values &values);
     static void persistWheelAction(WheelAction action);
-    static QByteArray settingsFileName();
     static void persistWindowGeometry(const QByteArray &geometry, bool restorationEnabled);
 
     void open(const Values &opening, const Values &defaultValues, PreviewOperation preview);
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
+    static QString settingsFilePathForTest();
     DialogSnapshot testSnapshot() const;
     void setTestValues(const Values &values);
     void resetForTest();

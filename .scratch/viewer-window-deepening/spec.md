@@ -67,6 +67,49 @@ and deterministic test controls. The production executable must not compile the 
 typed snapshots or existing public commands over one getter per widget. Test-only interface remains
 behind `FLICK_ENABLE_TEST_HARNESS`; production behavior must not depend on it.
 
+#### Accepted test seam contract
+
+The adapter is the only module that knows the line-oriented process protocol. It owns command-name
+matching, argument parsing, `QByteArray` reply formatting, separators and field order, error replies,
+and translation between protocol values and typed application values. Changing protocol spelling or
+serialization must not require editing `ViewerWindow`, `ViewingSurface`, Settings, or Image
+Information.
+
+Inspection crosses the window seam as a small set of typed capability snapshots rather than one
+method per protocol query or widget. The intended capability families are:
+
+- runtime/loading and cache state;
+- view and presentation state;
+- command-surface actions, ordering, availability, and focus;
+- Settings values and dialog transaction state;
+- Image Information and accessibility state;
+- window, screen, popup, and displayed-content geometry.
+
+These are capability families, not a required one-struct-per-line design. An implementation may
+combine them when that reduces the interface without coupling unrelated changes. Snapshots contain
+typed values such as enums, booleans, numbers, rectangles, action descriptors, and lists; they do
+not contain preformatted protocol replies.
+
+Control operations express user or test intent, such as activating a named command, selecting a
+presentation action, applying typed Settings values, sending an input event, or requesting a
+capture. They must not name private widgets (`focusDetails`, `toggleDetails`, or equivalent), expose
+widget pointers, or mirror the control tree. When a test needs to distinguish primary and secondary
+actions, it selects the semantic action role and observes a typed presentation snapshot.
+
+Settings and other production modules may expose a minimal typed inspection hook under
+`FLICK_ENABLE_TEST_HARNESS` only when the same outcome cannot be observed at the window seam. They
+must not parse test protocol fields, serialize protocol responses, or provide direct setters for
+individual controls. Deterministic environment overrides belong to test-driver construction or the
+adapter unless they are genuine injected inputs to a production module.
+
+The following shapes are explicitly rejected:
+
+- a forwarding method for every text command;
+- `QByteArray` description methods whose field order is part of the process protocol;
+- dialog-structure, focus, or state strings assembled by production modules;
+- control methods named after private widgets;
+- moving the existing dispatcher to another file while leaving its serialization in the window.
+
 ### Test organization
 
 Keep application-level behavior at the running-process interface. Split the monolithic suite by
@@ -114,6 +157,8 @@ with tests of private Qt widgets.
 - `ViewerWindow` coordinates the established deep modules without owning Settings or Image
   Information widget trees and transaction state.
 - The test command protocol is implemented in a test-only adapter.
+- No production module or window test-control seam parses process commands or constructs serialized
+  protocol replies; inspection crosses the seam as typed capability snapshots and semantic actions.
 - Application tests are split by capability and reuse one process-driver implementation.
 - All repository tests pass and architecture documentation describes the resulting ownership.
 - A final review finds no behavior drift against this specification or the Flick UX/UI
@@ -126,4 +171,3 @@ with tests of private Qt widgets.
 - Content-first UI decision: `../../docs/adr/0002-content-first-presentation.md`
 - UX/UI specification: `../flick-ux/spec.md`
 - Open native validation gate: `../flick-ux/issues/06-cross-platform-ux-validation.md`
-

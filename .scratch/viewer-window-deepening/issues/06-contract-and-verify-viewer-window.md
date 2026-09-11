@@ -32,6 +32,18 @@ Architecture documentation now records Settings, Image Information, and test-ada
 Dedicated contracts protect the documented ownership, keep native UX validation ticket 06 open,
 and verify both source-list and linked-symbol exclusion of the test adapter from production.
 
-Production and test-driver targets built successfully. The complete 17-test CTest suite passed in
-45.34 seconds, including `flick.performance-smoke`. Final independent Standards and Spec reviews
+Production and test-driver targets built successfully. The complete 18-test CTest suite passed in
+47.03 seconds, including `flick.performance-smoke`. Final independent Standards and Spec reviews
 reported no findings. Native UX validation ticket 06 remains unchanged and `ready-for-human`.
+
+## Review reopening
+
+A subsequent review found the test command protocol still distributed across `ViewerWindow`, its
+test-control interface, and Settings. Ticket 04 is reopened. This ticket remains blocked until the
+adapter owns parsing and serialization, the window seam uses typed capability snapshots and
+semantic operations, architecture checks protect that contract, and a fresh two-axis review passes.
+
+The reopened contract is now satisfied: presentation controls cross the seam by semantic action
+role, Settings exposes typed contract facts rather than protocol-shaped dialog descriptions, and
+the adapter alone formats all process replies. Strengthened architecture checks protect these
+boundaries, and the fresh Standards and Spec reviews reported no findings.

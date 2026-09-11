@@ -2,6 +2,7 @@
 
 #include "viewing_surface.h"
 
+#include <QAbstractButton>
 #include <QFileInfo>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
@@ -143,15 +144,14 @@ ViewingSurface::ViewingSurface(QWidget *displayedContent, Commands commands,
   largeImageApproveButton_->setObjectName(QStringLiteral("approveLargeImage"));
   largeImageApproveButton_->setAccessibleDescription(
       tr("Allows decoding of the current exceptionally large image."));
-  auto *rejectLarge = new QPushButton(tr("Skip"));
-  rejectLarge->setObjectName(QStringLiteral("rejectLargeImage"));
-  rejectLarge->setAccessibleDescription(
+  largeImageRejectButton_ = new QPushButton(tr("Skip"));
+  largeImageRejectButton_->setAccessibleDescription(
       tr("Cancels decoding of the current exceptionally large image."));
   warningButtonLayout->addWidget(largeImageApproveButton_);
-  warningButtonLayout->addWidget(rejectLarge);
+  warningButtonLayout->addWidget(largeImageRejectButton_);
   QObject::connect(largeImageApproveButton_, &QPushButton::clicked, this,
                    commands_.approveLargeImage);
-  QObject::connect(rejectLarge, &QPushButton::clicked, this,
+  QObject::connect(largeImageRejectButton_, &QPushButton::clicked, this,
                    commands_.rejectLargeImage);
   warningLayout->addWidget(largeImageExplanation_);
   warningLayout->addWidget(warningButtons, 0, Qt::AlignHCenter);
@@ -421,6 +421,28 @@ ViewingSurface::PresentationSnapshot ViewingSurface::presentationSnapshot() cons
           error ? errorDetailsButton_->text() : large ? tr("Skip") : QString{},
           usesOptionalOpacity(state_),
           current != nullptr && current->graphicsEffect() != nullptr};
+}
+
+void ViewingSurface::activateActionForTest(const ActionRole role) {
+  actionForTest(role)->click();
+}
+
+void ViewingSurface::focusActionForTest(const ActionRole role) {
+  actionForTest(role)->setFocus(Qt::OtherFocusReason);
+}
+
+QAbstractButton *ViewingSurface::actionForTest(const ActionRole role) const {
+  if (role == ActionRole::Details) {
+    return errorDetailsButton_;
+  }
+  if (state_ == State::Error) {
+    return role == ActionRole::Primary
+               ? static_cast<QAbstractButton *>(errorRetryButton_)
+               : errorDetailsButton_;
+  }
+  return role == ActionRole::Primary
+             ? static_cast<QAbstractButton *>(largeImageApproveButton_)
+             : largeImageRejectButton_;
 }
 #endif
 

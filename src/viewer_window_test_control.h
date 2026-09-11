@@ -18,10 +18,9 @@ class QKeyEvent;
 
 enum class ViewerWindowTestRegion { Window, ViewingSurface, ImageViewport };
 enum class ViewerWindowTestOperation {
-    OpenSettings, QuitApplication, SelectWheelZoom, FocusErrorDetails, FocusLargeImageSkip,
-    ToggleErrorDetails, ApproveLargeImage, RejectLargeImage, FocusViewingSurface,
-    PersistWindowGeometry, ResetSettings, ApplySettingsDialog, CancelSettingsDialog,
-    DisplayConfigurationChanged, FailExternalActions
+    OpenSettings, QuitApplication, SelectWheelZoom, FocusViewingSurface, PersistWindowGeometry,
+    ResetSettings, ApplySettingsDialog, CancelSettingsDialog, DisplayConfigurationChanged,
+    FailExternalActions
 };
 
 struct TestActionSnapshot
@@ -96,6 +95,8 @@ public:
 
     ViewerWindowTestSnapshot snapshot(const QString &decodePath = {}) const;
     void perform(ViewerWindowTestOperation operation);
+    void activatePresentationAction(ViewingSurface::ActionRole role);
+    void focusPresentationAction(ViewingSurface::ActionRole role);
     void capture(const QString &path) const;
     QRect rect(ViewerWindowTestRegion region) const;
     QRect availableScreenGeometry(ViewerWindowTestRegion region) const;

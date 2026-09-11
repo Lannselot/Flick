@@ -7,6 +7,7 @@
 #include <functional>
 
 class QLabel;
+class QAbstractButton;
 class QGraphicsOpacityEffect;
 class QPropertyAnimation;
 class QPushButton;
@@ -17,6 +18,7 @@ class QToolButton;
 class ViewingSurface final : public QWidget {
 public:
   enum class State { Empty, Loading, Displayed, Error, LargeImageConfirmation };
+  enum class ActionRole { Primary, Secondary, Details };
 
   struct StatusContext {
     QString filename;
@@ -98,12 +100,17 @@ public:
   State state() const;
 #ifdef FLICK_ENABLE_TEST_HARNESS
   PresentationSnapshot presentationSnapshot() const;
+  void activateActionForTest(ActionRole role);
+  void focusActionForTest(ActionRole role);
 #endif
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
 
 private:
+#ifdef FLICK_ENABLE_TEST_HARNESS
+  QAbstractButton *actionForTest(ActionRole role) const;
+#endif
   void showPresentation(QWidget *widget, State state);
   static bool usesOptionalOpacity(State state);
   void positionStatus();
@@ -125,6 +132,7 @@ private:
   QWidget *largeImageWarning_ = nullptr;
   QLabel *largeImageExplanation_ = nullptr;
   QPushButton *largeImageApproveButton_ = nullptr;
+  QPushButton *largeImageRejectButton_ = nullptr;
   QLabel *statusDisplay_ = nullptr;
   QTimer *statusTimer_ = nullptr;
   QGraphicsOpacityEffect *statusOpacity_ = nullptr;

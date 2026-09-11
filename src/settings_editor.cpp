@@ -130,11 +130,6 @@ void Editor::persistWheelAction(const WheelAction action)
     QSettings().setValue(QStringLiteral("view/wheelAction"), wheelActionName(action));
 }
 
-QByteArray Editor::settingsFileName()
-{
-    return QSettings().fileName().toUtf8();
-}
-
 void Editor::persistWindowGeometry(const QByteArray &geometry, const bool restorationEnabled)
 {
     QSettings settings;
@@ -250,6 +245,11 @@ void Editor::open(const Values &opening, const Values &defaultValues, PreviewOpe
 }
 
 #ifdef FLICK_ENABLE_TEST_HARNESS
+QString Editor::settingsFilePathForTest()
+{
+    return QSettings().fileName();
+}
+
 DialogSnapshot Editor::testSnapshot() const
 {
     const auto &state = *implementation_;
@@ -260,19 +260,29 @@ DialogSnapshot Editor::testSnapshot() const
     }
     snapshot.open = true;
     snapshot.size = state.dialog_->size();
+    QList<QStringList> groups;
     for (const QGroupBox *group : state.dialog_->findChildren<QGroupBox *>()) {
-        DialogGroup groupSnapshot{group->title(), {}};
+        QStringList groupContents{group->title()};
         for (const QWidget *child :
              group->findChildren<QWidget *>(QString{}, Qt::FindDirectChildrenOnly)) {
             if (!child->accessibleName().isEmpty()) {
-                groupSnapshot.controls.append(child->accessibleName());
+                groupContents.append(child->accessibleName());
             }
         }
-        snapshot.groups.append(groupSnapshot);
+        groups.append(groupContents);
     }
-    snapshot.buttons = {state.buttons_->button(QDialogButtonBox::Reset)->text(),
-                        state.buttons_->button(QDialogButtonBox::Cancel)->text(),
-                        state.buttons_->button(QDialogButtonBox::Apply)->text()};
+    const QStringList buttons = {state.buttons_->button(QDialogButtonBox::Reset)->text(),
+                                 state.buttons_->button(QDialogButtonBox::Cancel)->text(),
+                                 state.buttons_->button(QDialogButtonBox::Apply)->text()};
+    snapshot.structureMatchesContract =
+        groups == QList<QStringList>{{QDialog::tr("Navigation"), QDialog::tr("Mouse wheel action")},
+                                     {QDialog::tr("Appearance"), QDialog::tr("Viewing surface background"),
+                                      QDialog::tr("Show status overlay")},
+                                     {QDialog::tr("Performance & Window"), QDialog::tr("Decoded cache budget"),
+                                      QDialog::tr("Restore window size and position")}} &&
+        buttons == QStringList{QDialog::tr("Reset Defaults"), QDialog::tr("Cancel"),
+                               QDialog::tr("Apply")};
+    QStringList focusOrder;
     const QWidget *widget = state.wheel_;
     do {
         if (widget->focusPolicy() != Qt::NoFocus) {
@@ -283,11 +293,26 @@ DialogSnapshot Editor::testSnapshot() const
                 }
             }
             if (!name.isEmpty()) {
-                snapshot.focusOrder.append(name);
+                focusOrder.append(name);
             }
         }
         widget = widget->nextInFocusChain();
     } while (widget != state.wheel_ && widget != nullptr);
+    const QStringList requiredFocusOrder = {
+        QDialog::tr("Mouse wheel action"), QDialog::tr("Viewing surface background"),
+        QDialog::tr("Show status overlay"), QDialog::tr("Decoded cache budget"),
+        QDialog::tr("Restore window size and position"), QDialog::tr("Reset Defaults"),
+        QDialog::tr("Cancel"), QDialog::tr("Apply")};
+    qsizetype previousPosition = -1;
+    snapshot.focusOrderMatchesContract = true;
+    for (const QString &name : requiredFocusOrder) {
+        const qsizetype position = focusOrder.indexOf(name);
+        if (position <= previousPosition) {
+            snapshot.focusOrderMatchesContract = false;
+            break;
+        }
+        previousPosition = position;
+    }
     return snapshot;
 }
 

@@ -91,7 +91,7 @@ QAccessibleInterface *flickAccessibleInterface(const QString &, QObject *object)
     return nullptr;
 }
 
-class ImageCanvas final : public QLabel
+class DisplayedImage final : public QLabel
 {
   public:
     void showImage(const QImage &image, const QSize &displayedSize, const QSize &viewportSize)
@@ -155,7 +155,7 @@ class ViewerWindowImplementation final : public QWidget
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
 
-        imageLabel_ = new ImageCanvas;
+        imageLabel_ = new DisplayedImage;
         imageLabel_->setObjectName(QStringLiteral("imageLabel"));
         imageLabel_->setAlignment(Qt::AlignCenter);
         imageLabel_->setAccessibleName(tr("Viewing surface"));
@@ -401,11 +401,6 @@ class ViewerWindowImplementation final : public QWidget
         case ViewerWindowTestOperation::OpenSettings: commandAction("settingsAction")->trigger(); break;
         case ViewerWindowTestOperation::QuitApplication: commandAction("applicationQuitAction")->trigger(); break;
         case ViewerWindowTestOperation::SelectWheelZoom: commandAction("wheelZoomAction")->trigger(); break;
-        case ViewerWindowTestOperation::FocusErrorDetails: findChild<QToolButton *>()->setFocus(Qt::OtherFocusReason); break;
-        case ViewerWindowTestOperation::FocusLargeImageSkip: findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))->setFocus(Qt::OtherFocusReason); break;
-        case ViewerWindowTestOperation::ToggleErrorDetails: if (auto *button = findChild<QToolButton *>()) button->toggle(); break;
-        case ViewerWindowTestOperation::ApproveLargeImage: findChild<QPushButton *>(QStringLiteral("approveLargeImage"))->click(); break;
-        case ViewerWindowTestOperation::RejectLargeImage: findChild<QPushButton *>(QStringLiteral("rejectLargeImage"))->click(); break;
         case ViewerWindowTestOperation::FocusViewingSurface: activateWindow(); setFocus(Qt::OtherFocusReason); break;
         case ViewerWindowTestOperation::PersistWindowGeometry: persistWindowGeometry(); break;
         case ViewerWindowTestOperation::ResetSettings: settingsEditor_->resetForTest(); break;
@@ -414,6 +409,16 @@ class ViewerWindowImplementation final : public QWidget
         case ViewerWindowTestOperation::DisplayConfigurationChanged: displayConfigurationChanged(); break;
         case ViewerWindowTestOperation::FailExternalActions: failExternalActionsForTest_ = true; break;
         }
+    }
+
+    void activatePresentationActionForTest(const ViewingSurface::ActionRole role)
+    {
+        surface_->activateActionForTest(role);
+    }
+
+    void focusPresentationActionForTest(const ViewingSurface::ActionRole role)
+    {
+        surface_->focusActionForTest(role);
     }
 
 #endif
@@ -1520,7 +1525,7 @@ class ViewerWindowImplementation final : public QWidget
     QImage image_;
     std::unique_ptr<PlatformServices> platformServices_;
     ImageLoading::Loader imageLoader_;
-    ImageCanvas *imageLabel_ = nullptr;
+    DisplayedImage *imageLabel_ = nullptr;
     ViewingSurface *surface_ = nullptr;
     QScrollArea *viewport_ = nullptr;
     QTimer *animationTimer_ = nullptr;
@@ -1595,6 +1600,16 @@ ViewerWindowTestSnapshot ViewerWindowTestControl::snapshot(const QString &decode
 void ViewerWindowTestControl::perform(const ViewerWindowTestOperation operation)
 {
     window_.implementation.performTestOperation(operation);
+}
+
+void ViewerWindowTestControl::activatePresentationAction(const ViewingSurface::ActionRole role)
+{
+    window_.implementation.activatePresentationActionForTest(role);
+}
+
+void ViewerWindowTestControl::focusPresentationAction(const ViewingSurface::ActionRole role)
+{
+    window_.implementation.focusPresentationActionForTest(role);
 }
 
 QRect ViewerWindowTestControl::rect(const ViewerWindowTestRegion target) const

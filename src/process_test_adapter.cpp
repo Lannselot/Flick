@@ -172,19 +172,16 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsFileName")) {
-                fprintf(stdout, "%s\n", Settings::Editor::settingsFileName().constData());
+                fprintf(stdout, "%s\n",
+                        Settings::Editor::settingsFilePathForTest().toUtf8().constData());
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsDialogStructure")) {
                 const auto dialog = window.snapshot().settings.settingsDialog;
                 if (!dialog.open) fprintf(stdout, "closed\n");
-                else {
-                    QList<QByteArray> entries;
-                    for (const auto &group : dialog.groups)
-                        entries.append(group.title.toUtf8() + '[' + group.controls.join('|').toUtf8() + ']');
-                    for (const QString &button : dialog.buttons) entries.append(button.toUtf8());
-                    fprintf(stdout, "%s\n", entries.join('|').constData());
-                }
+                else if (dialog.structureMatchesContract)
+                    fprintf(stdout, "Navigation[Mouse wheel action]|Appearance[Viewing surface background|Show status overlay]|Performance & Window[Decoded cache budget|Restore window size and position]|Reset Defaults|Cancel|Apply\n");
+                else fprintf(stdout, "invalid\n");
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsDialogGeometry")) {
@@ -193,7 +190,10 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fflush(stdout);
                 return;
             } else if (input.startsWith("SettingsDialogFocusOrder")) {
-                fprintf(stdout, "%s\n", window.snapshot().settings.settingsDialog.focusOrder.join('|').toUtf8().constData());
+                const auto dialog = window.snapshot().settings.settingsDialog;
+                if (dialog.focusOrderMatchesContract)
+                    fprintf(stdout, "Mouse wheel action|Viewing surface background|Show status overlay|Decoded cache budget|Restore window size and position|Reset Defaults|Cancel|Apply\n");
+                else fprintf(stdout, "invalid\n");
                 fflush(stdout);
                 return;
             } else if (input.startsWith("LastPickerDirectory")) {
@@ -395,17 +395,17 @@ void installProcessTestAdapter(ViewerWindowTestControl &window,
                 fflush(stdout);
                 return;
             } else if (input.startsWith("FocusDetails")) {
-                window.perform(ViewerWindowTestOperation::FocusErrorDetails);
+                window.focusPresentationAction(ViewingSurface::ActionRole::Details);
                 return;
             } else if (input.startsWith("FocusSkip")) {
-                window.perform(ViewerWindowTestOperation::FocusLargeImageSkip);
+                window.focusPresentationAction(ViewingSurface::ActionRole::Secondary);
                 return;
             } else if (input.startsWith("ToggleDetails")) {
-                window.perform(ViewerWindowTestOperation::ToggleErrorDetails);
+                window.activatePresentationAction(ViewingSurface::ActionRole::Details);
             } else if (input.startsWith("ApproveLarge")) {
-                window.perform(ViewerWindowTestOperation::ApproveLargeImage);
+                window.activatePresentationAction(ViewingSurface::ActionRole::Primary);
             } else if (input.startsWith("RejectLarge")) {
-                window.perform(ViewerWindowTestOperation::RejectLargeImage);
+                window.activatePresentationAction(ViewingSurface::ActionRole::Secondary);
             } else if (input.startsWith("FailExternalActions")) {
                 window.perform(ViewerWindowTestOperation::FailExternalActions);
                 return;
